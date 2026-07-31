@@ -1,0 +1,116 @@
+{
+  "format": "TADebugViewToolWorkflows",
+  "version": 2,
+  "workflows": [
+    {
+      "id": "TADebugWorkflow_MaterialCost",
+      "label": "Material Cost",
+      "tooltip": "Shader Complexity + Quad, GPU and frame timing overlays.",
+      "icon": "ClassIcon.Material",
+      "activateActions": [
+        { "type": "ViewMode", "value": "VMI_ShaderComplexityWithQuadOverdraw" },
+        { "type": "Command", "value": "stat none" },
+        { "type": "Command", "value": "stat unit" },
+        { "type": "Command", "value": "stat gpu" }
+      ],
+      "deactivateActions": [
+        { "type": "ViewMode", "value": "VMI_Lit" },
+        { "type": "Command", "value": "stat none" }
+      ]
+    },
+    {
+      "id": "TADebugWorkflow_NaniteAudit",
+      "label": "Nanite Audit",
+      "tooltip": "Nanite Overview, bounds, and frame timing.",
+      "icon": "EditorViewport.VisualizeNaniteMode",
+      "activateActions": [
+        { "type": "Nanite", "value": "Overview" },
+        { "type": "Command", "value": "showflag.bounds 1" },
+        { "type": "Command", "value": "stat none" },
+        { "type": "Command", "value": "stat unit" }
+      ],
+      "deactivateActions": [
+        { "type": "ViewMode", "value": "VMI_Lit" },
+        { "type": "Command", "value": "showflag.bounds 0" },
+        { "type": "Command", "value": "stat none" }
+      ]
+    },
+    {
+      "id": "TADebugWorkflow_LumenCheck",
+      "label": "Lumen Check",
+      "tooltip": "Lumen Surface Cache and frame timing inspection.",
+      "icon": "EditorViewport.VisualizeLumenMode",
+      "activateActions": [
+        { "type": "Lumen", "value": "SurfaceCache" },
+        { "type": "Command", "value": "stat none" },
+        { "type": "Command", "value": "stat unit" }
+      ],
+      "deactivateActions": [
+        { "type": "ViewMode", "value": "VMI_Lit" },
+        { "type": "Command", "value": "stat none" }
+      ]
+    },
+    {
+      "id": "TADebugWorkflow_VSMCache",
+      "label": "VSM Cache",
+      "tooltip": "Virtual Shadow Map cached pages and GPU timing.",
+      "icon": "EditorViewport.VisualizeVirtualShadowMapMode",
+      "activateActions": [
+        { "type": "VSM", "value": "cache" },
+        { "type": "Command", "value": "r.Shadow.Virtual.Visualize.ShowCachedPagesOnly 1" },
+        { "type": "Command", "value": "stat none" },
+        { "type": "Command", "value": "stat gpu" }
+      ],
+      "deactivateActions": [
+        { "type": "ViewMode", "value": "VMI_Lit" },
+        { "type": "Command", "value": "stat none" },
+        { "type": "Command", "value": "r.Shadow.Virtual.Visualize.ShowCachedPagesOnly 0" }
+      ]
+    },
+    {
+      "id": "TADebugWorkflow_CollisionQA",
+      "label": "Collision QA",
+      "tooltip": "Pawn collision, navigation, and bounds inspection.",
+      "icon": "LevelEditor.Tabs.Details",
+      "activateActions": [
+        { "type": "ViewMode", "value": "VMI_CollisionPawn" },
+        { "type": "Command", "value": "showflag.navigation 1" },
+        { "type": "Command", "value": "showflag.bounds 1" }
+      ],
+      "deactivateActions": [
+        { "type": "ViewMode", "value": "VMI_Lit" },
+        { "type": "Command", "value": "showflag.navigation 0" },
+        { "type": "Command", "value": "showflag.bounds 0" }
+      ]
+    },
+    {
+      "id": "TADebugWorkflow_PerformanceHUD",
+      "label": "Performance HUD",
+      "tooltip": "Lit view with FPS, frame timing, and GPU timing.",
+      "icon": "Profiler.Tab",
+      "activateActions": [
+        { "type": "ViewMode", "value": "VMI_Lit" },
+        { "type": "Command", "value": "stat none" },
+        { "type": "Command", "value": "stat fps" },
+        { "type": "Command", "value": "stat unit" },
+        { "type": "Command", "value": "stat gpu" }
+      ],
+      "deactivateActions": [
+        { "type": "ViewMode", "value": "VMI_Lit" },
+        { "type": "Command", "value": "stat none" }
+      ]
+    },
+    {
+      "id": "TADebugWorkflow_ResetDebug",
+      "label": "Reset Debug",
+      "tooltip": "Return to Lit and clear common debug overlays.",
+      "icon": "Icons.Refresh",
+      "activateActions": [
+        { "type": "ViewMode", "value": "VMI_Lit" },
+        { "type": "Command", "value": "stat none" },
+        { "type": "Command", "value": "r.Shadow.Virtual.Visualize.ShowCachedPagesOnly 0" }
+      ],
+      "deactivateActions": []
+    }
+  ]
+}

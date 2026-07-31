@@ -1,0 +1,30 @@
+# Unreal Engine generated content
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+
+# IDE and editor state
+.vs/
+.idea/
+.vscode/
+*.VC.db
+*.suo
+*.user
+*.opensdf
+*.sdf
+
+# Local agent and workspace state
+.agents/
+.codex/
+.cursor/
+
+# Internal design and review artifacts
+DesignMockups/
+PLUGIN_REVIEW_*.md
+
+# Temporary files and logs
+*.tmp
+*.log
+Thumbs.db
+.DS_Store
