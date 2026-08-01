@@ -11,14 +11,15 @@ TA Debug View Tool is an editor-only UE5 plugin for technical artists. It provid
 
 ## Main Features
 
-- **Workflows**: a unified workflow grid with Default, Modified, and User Created states for Material Cost, Nanite Audit, Lumen Check, VSM Cache, Collision QA, Performance HUD, Reset Debug, and custom checks.
-- **Debug Views**: grouped viewport debug presets for ViewMode, Nanite, Lumen, VSM, lighting, materials, geometry, and performance.
+- **Workflows**: a unified workflow grid with Default, Modified, and User Created states for Material Cost, Nanite Audit, Lumen Check, VSM Cache, Collision QA, Performance HUD, Reset Debug, and custom checks. Custom workflows can choose their own persisted card icon.
+- **Debug Views**: grouped viewport visualization presets for ViewMode, Nanite, Lumen, VSM, lighting, materials, and geometry.
+- **Commands**: a small curated set of VSM, geometry, and performance commands, grouped for quick access without duplicating the full UE console.
 - **Context Inspector**: inspect, run, edit, reset, or delete the selected workflow without leaving the main panel.
 - **Quick Access**: Favorites above the page navigation, displayed five per page with mouse-wheel paging, clickable page dots, and an all-favorites dropdown.
 - **Viewport Target**: Active, Perspective, and All target modes for applying debug views across editor viewports.
 - **Keyboard Shortcuts**: fixed shortcuts for opening the panel, resetting debug state, and executing the first five favorites.
 - **Help UI**: in-panel reference for shortcuts, quick access behavior, pages, and viewport targets.
-- **Action Launcher**: search built-in views and effective workflows from one field; press Enter to execute the first result.
+- **Action Launcher**: search built-in views, effective workflows, curated commands, and every console command or CVar registered in the current UE session; press Enter to execute the first result.
 - **Preset Diagnostics**: validate the default/override workflow registry and clean stale Favorites / Recent references.
 
 ## Default Shortcuts
@@ -36,6 +37,8 @@ TA Debug View Tool is an editor-only UE5 plugin for technical artists. It provid
 These commands appear in Editor Preferences > Keyboard Shortcuts under the TA Debug Views command context.
 
 The panel opens only from its toolbar/menu command or shortcut. Leaving it open when the editor exits does not make it reopen automatically on the next editor launch.
+
+New standalone panel windows request a `1280 x 820` minimum desired size so the navigation, workflow grid, and inspector open without being compressed.
 
 ## Default Favorites
 
@@ -84,12 +87,12 @@ The plugin remembers:
 
 - `TADebugViewToolModule.cpp`: module startup, tab registration, menu and toolbar entries, command binding, shortcut execution.
 - `TADebugViewToolCommands.*`: fixed UE editor commands and default keyboard chords.
-- `STADebugViewPanel.*`: three-column Slate panel, workflow grid, inline context editor, quick access, diagnostics, and help UI.
+- `STADebugViewPanel.*`: three-column Slate panel, workflow grid, Commands browser, runtime console search, inline context editor, quick access, diagnostics, and help UI.
 - `TADebugViewExecutor.*`: applies view modes, visualization modes, workflow state capture, workflow restore, and console commands.
 - `TADebugViewPresetRegistry.*`: built-in debug view definitions and compiled workflow fallback data.
 - `TADebugViewWorkflowRegistry.*`: loads, validates, merges, migrates, saves, resets, and deletes workflow overrides.
 - `TADebugViewCustomPresetSettings.*`: personal panel state, legacy migration data, and quick access references.
-- `TADebugViewQuickActionRuntime.*`: shared runtime helper for resolving quick actions, executing favorites/workflows/debug presets, writing Recent, and cleaning stale references.
+- `TADebugViewQuickActionRuntime.*`: shared runtime helper for resolving quick actions, executing favorites/workflows/debug presets/runtime console commands, writing Recent, and cleaning stale references.
 - `TADebugViewPresetDiagnostics.*`: effective-registry validation and stale-reference reporting.
 
 ## Current Scope

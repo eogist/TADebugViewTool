@@ -1,5 +1,6 @@
 #include "TADebugViewQuickActionRuntime.h"
 
+#include "HAL/IConsoleManager.h"
 #include "TADebugViewExecutor.h"
 #include "TADebugViewPresetRegistry.h"
 #include "TADebugViewToolConstants.h"
@@ -65,6 +66,42 @@ bool ResolveQuickAction(
 			}
 		}
 
+		return false;
+	}
+	if (QuickAction.ActionType == ETADebugViewQuickActionType::ConsoleCommand)
+	{
+		IConsoleObject* ConsoleObject = IConsoleManager::Get().FindConsoleObject(*QuickAction.Id);
+		if (!ConsoleObject)
+		{
+			return false;
+		}
+
+		FString HelpText = ConsoleObject->GetHelp();
+		if (IConsoleVariable* ConsoleVariable = ConsoleObject->AsVariable())
+		{
+			const FString CurrentValue = ConsoleVariable->GetString();
+			HelpText = HelpText.IsEmpty()
+				? FString::Printf(TEXT("Current value: %s"), *CurrentValue)
+				: FString::Printf(TEXT("Current value: %s\n%s"), *CurrentValue, *HelpText);
+		}
+		else if (HelpText.IsEmpty())
+		{
+			HelpText = TEXT("Registered UE console command.");
+		}
+
+		const FString RuntimePresetId = FString::Printf(
+			TEXT("TADebugConsole_%08x"),
+			GetTypeHash(QuickAction.Id));
+		OutDebugPreset.Emplace(
+			*RuntimePresetId,
+			FText::FromString(QuickAction.Id),
+			FText::FromString(HelpText),
+			*QuickAction.Id,
+			FName(TEXT("Icons.Settings")));
+		return true;
+	}
+	if (QuickAction.ActionType != ETADebugViewQuickActionType::WorkflowPreset)
+	{
 		return false;
 	}
 

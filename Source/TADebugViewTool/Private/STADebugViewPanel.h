@@ -42,7 +42,7 @@ private:
 	{
 		Workflows,
 		DebugViews,
-		Advanced,
+		Commands,
 		Help,
 		Diagnostics,
 		Count
@@ -64,7 +64,7 @@ private:
 		All,
 		Workflows,
 		DebugViews,
-		Advanced
+		Commands
 	};
 
 	TSharedRef<SWidget> MakeNavigationBar();
@@ -87,7 +87,7 @@ private:
 	TSharedRef<SWidget> MakeWorkflowDetails(const TADebugViewTool::FWorkflowPreset& WorkflowPreset);
 	TSharedRef<SWidget> MakeDebugViewsPage();
 	TSharedRef<SWidget> MakeDebugViewRow(const TADebugViewTool::FDebugViewPreset& Preset);
-	TSharedRef<SWidget> MakeAdvancedPage();
+	TSharedRef<SWidget> MakeCommandsPage();
 	TSharedRef<SWidget> MakeUtilityRow(const TADebugViewTool::FDebugViewPreset& Preset);
 	TSharedRef<SWidget> MakeHelpPage();
 	TSharedRef<SWidget> MakeHelpBlock(const FText& Heading, const TArray<TSharedRef<SWidget>>& Rows);
@@ -96,6 +96,8 @@ private:
 	TSharedRef<SWidget> MakeWorkflowPresetButton(TADebugViewTool::FWorkflowPreset WorkflowPreset);
 	TSharedRef<SWidget> MakeDebugGroupButton(const TADebugViewTool::FDebugViewGroup& Group);
 	TSharedRef<SWidget> MakeCustomPresetEditor();
+	TSharedRef<SWidget> MakeWorkflowIconPicker();
+	TSharedRef<SWidget> MakeWorkflowIconMenu();
 	TSharedRef<SWidget> MakeEditorTextField(
 		const FText& Label,
 		TAttribute<FText> Text,
@@ -171,6 +173,7 @@ private:
 	TSharedPtr<SMenuAnchor> SearchResultsAnchor;
 	TSharedPtr<SVerticalBox> SearchResultsBox;
 	TSharedPtr<SSearchBox> WorkflowFilterBox;
+	TSharedPtr<SComboButton> WorkflowIconPickerButton;
 	TSharedPtr<SVerticalBox> DiagnosticsBox;
 	TSharedPtr<SVerticalBox> CustomPresetListBox;
 	TSharedPtr<SVerticalBox> ContextDetailsBox;

@@ -2,9 +2,11 @@
 
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "HAL/IConsoleManager.h"
 #include "Layout/WidgetPath.h"
 #include "Misc/MessageDialog.h"
 #include "Styling/AppStyle.h"
+#include "Styling/SlateTypes.h"
 #include "TADebugViewCustomPresetSettings.h"
 #include "TADebugViewExecutor.h"
 #include "TADebugViewPresetDiagnostics.h"
@@ -38,6 +40,15 @@
 namespace
 {
 DECLARE_DELEGATE_RetVal_OneParam(bool, FOnQuickAccessPageDelta, int32);
+
+// Shared layout metrics keep page headers, list rows, forms, and action bars on
+// the same visual rhythm instead of letting each page grow its own dimensions.
+constexpr float StandardControlHeight = 32.0f;
+constexpr float StandardListRowMinHeight = 44.0f;
+constexpr float StandardFieldGap = 8.0f;
+constexpr float StandardSectionGap = 12.0f;
+constexpr float EditorControlHeight = 36.0f;
+constexpr float EditorActionRowHeight = 44.0f;
 
 class SQuickAccessPager final : public SCompoundWidget
 {
@@ -128,6 +139,55 @@ struct FActionValueOption
 	FString Value;
 };
 
+struct FWorkflowIconOption
+{
+	FWorkflowIconOption(const TCHAR* InIconName, const TCHAR* InLabel)
+		: IconName(InIconName)
+		, Label(InLabel)
+	{
+	}
+
+	FName IconName;
+	FString Label;
+};
+
+const TArray<FWorkflowIconOption>& GetWorkflowIconOptions()
+{
+	// Keep this list curated and backed by AppStyle brushes already used by the
+	// plugin, so every option has a valid editor icon across supported UE builds.
+	static const TArray<FWorkflowIconOption> Options =
+	{
+		FWorkflowIconOption(TEXT("Icons.Settings"), TEXT("Settings")),
+		FWorkflowIconOption(TEXT("ClassIcon.Material"), TEXT("Material")),
+		FWorkflowIconOption(TEXT("EditorViewport.VisualizeNaniteMode"), TEXT("Nanite")),
+		FWorkflowIconOption(TEXT("EditorViewport.VisualizeLumenMode"), TEXT("Lumen")),
+		FWorkflowIconOption(TEXT("EditorViewport.VisualizeVirtualShadowMapMode"), TEXT("VSM")),
+		FWorkflowIconOption(TEXT("Profiler.Tab"), TEXT("Performance")),
+		FWorkflowIconOption(TEXT("LevelEditor.Tabs.Details"), TEXT("Geometry")),
+		FWorkflowIconOption(TEXT("Icons.Light"), TEXT("Lighting")),
+		FWorkflowIconOption(TEXT("Icons.Visibility"), TEXT("Visibility")),
+		FWorkflowIconOption(TEXT("Icons.Check"), TEXT("Check")),
+		FWorkflowIconOption(TEXT("Icons.Refresh"), TEXT("Reset")),
+		FWorkflowIconOption(TEXT("Icons.Warning"), TEXT("Warning")),
+		FWorkflowIconOption(TEXT("Icons.Search"), TEXT("Inspect"))
+	};
+
+	return Options;
+}
+
+FText GetWorkflowIconLabel(FName IconName)
+{
+	if (const FWorkflowIconOption* Option = GetWorkflowIconOptions().FindByPredicate([IconName](const FWorkflowIconOption& Candidate)
+	{
+		return Candidate.IconName == IconName;
+	}))
+	{
+		return FText::FromString(Option->Label);
+	}
+
+	return FText::FromName(IconName);
+}
+
 const TArray<TSharedPtr<FActionOption>>& GetActionTypeOptions()
 {
 	static const TArray<TSharedPtr<FActionOption>> Options =
@@ -136,7 +196,7 @@ const TArray<TSharedPtr<FActionOption>>& GetActionTypeOptions()
 		MakeShared<FActionOption>(ETADebugViewCustomActionType::NaniteVisualization, TEXT("Nanite")),
 		MakeShared<FActionOption>(ETADebugViewCustomActionType::LumenVisualization, TEXT("Lumen")),
 		MakeShared<FActionOption>(ETADebugViewCustomActionType::VirtualShadowMapVisualization, TEXT("VSM")),
-		MakeShared<FActionOption>(ETADebugViewCustomActionType::Command, TEXT("Command (Advanced)"))
+		MakeShared<FActionOption>(ETADebugViewCustomActionType::Command, TEXT("Command"))
 	};
 
 	return Options;
@@ -268,10 +328,10 @@ bool IsValidViewportTargetValue(uint8 ViewportTargetValue)
 }
 
 // Presets are split across two pages by action type rather than by group. Raw
-// console commands are utilities that belong on Advanced, while view mode and
+// console commands belong on Commands, while view mode and
 // visualization presets are the per-system Debug Views lists. Splitting by group
 // instead would list the VSM and Geometry groups on both pages.
-bool IsAdvancedPagePreset(const TADebugViewTool::FDebugViewPreset& Preset)
+bool IsCommandsPagePreset(const TADebugViewTool::FDebugViewPreset& Preset)
 {
 	return Preset.ActionType == TADebugViewTool::EPresetActionType::Command;
 }
@@ -281,7 +341,7 @@ bool GroupHasDebugViewPresets(const TADebugViewTool::FDebugViewGroup& Group)
 {
 	return Group.Presets.ContainsByPredicate([](const TADebugViewTool::FDebugViewPreset& Preset)
 	{
-		return !IsAdvancedPagePreset(Preset);
+		return !IsCommandsPagePreset(Preset);
 	});
 }
 
@@ -355,6 +415,54 @@ const FSlateBrush* GetInsetPanelBrush()
 		FLinearColor::FromSRGBColor(FColor(46, 46, 46)),
 		1.0f);
 	return &Brush;
+}
+
+const FButtonStyle* GetEditorSecondaryButtonStyle()
+{
+	static const FButtonStyle Style = []()
+	{
+		FButtonStyle Result;
+		Result
+			.SetNormal(FSlateRoundedBoxBrush(FLinearColor::FromSRGBColor(FColor(54, 56, 60)), 6.0f))
+			.SetHovered(FSlateRoundedBoxBrush(FLinearColor::FromSRGBColor(FColor(68, 72, 77)), 6.0f))
+			.SetPressed(FSlateRoundedBoxBrush(FLinearColor::FromSRGBColor(FColor(42, 45, 49)), 6.0f))
+			.SetNormalPadding(FMargin(10.0f, 6.0f))
+			.SetPressedPadding(FMargin(10.0f, 7.0f, 10.0f, 5.0f));
+		return Result;
+	}();
+	return &Style;
+}
+
+const FButtonStyle* GetEditorPrimaryButtonStyle()
+{
+	static const FButtonStyle Style = []()
+	{
+		FButtonStyle Result;
+		Result
+			.SetNormal(FSlateRoundedBoxBrush(FLinearColor::FromSRGBColor(FColor(0, 102, 204)), 6.0f))
+			.SetHovered(FSlateRoundedBoxBrush(FLinearColor::FromSRGBColor(FColor(0, 126, 235)), 6.0f))
+			.SetPressed(FSlateRoundedBoxBrush(FLinearColor::FromSRGBColor(FColor(0, 80, 164)), 6.0f))
+			.SetNormalPadding(FMargin(10.0f, 6.0f))
+			.SetPressedPadding(FMargin(10.0f, 7.0f, 10.0f, 5.0f));
+		return Result;
+	}();
+	return &Style;
+}
+
+const FButtonStyle* GetEditorDangerButtonStyle()
+{
+	static const FButtonStyle Style = []()
+	{
+		FButtonStyle Result;
+		Result
+			.SetNormal(FSlateRoundedBoxBrush(FLinearColor::FromSRGBColor(FColor(90, 42, 44)), 6.0f))
+			.SetHovered(FSlateRoundedBoxBrush(FLinearColor::FromSRGBColor(FColor(122, 51, 54)), 6.0f))
+			.SetPressed(FSlateRoundedBoxBrush(FLinearColor::FromSRGBColor(FColor(70, 32, 34)), 6.0f))
+			.SetNormalPadding(FMargin(10.0f, 6.0f))
+			.SetPressedPadding(FMargin(10.0f, 7.0f, 10.0f, 5.0f));
+		return Result;
+	}();
+	return &Style;
 }
 
 const FSlateBrush* GetQuickAccessPageDotBrush(bool bActive)
@@ -610,11 +718,15 @@ void STADebugViewPanel::Construct(const FArguments& InArgs)
 
 	ChildSlot
 	[
-		SNew(SBorder)
-		.BorderImage(GetAppFrameBrush())
-		.Padding(0.0f)
+		SNew(SBox)
+		.MinDesiredWidth(1280.0f)
+		.MinDesiredHeight(820.0f)
 		[
-			SNew(SVerticalBox)
+			SNew(SBorder)
+			.BorderImage(GetAppFrameBrush())
+			.Padding(0.0f)
+			[
+				SNew(SVerticalBox)
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			[
@@ -724,7 +836,7 @@ void STADebugViewPanel::Construct(const FArguments& InArgs)
 								]
 								+ SWidgetSwitcher::Slot()
 								[
-									MakeAdvancedPage()
+									MakeCommandsPage()
 								]
 								+ SWidgetSwitcher::Slot()
 								[
@@ -743,7 +855,7 @@ void STADebugViewPanel::Construct(const FArguments& InArgs)
 				.Padding(10.0f, 0.0f, 0.0f, 0.0f)
 				[
 					SNew(SBox)
-					.WidthOverride(360.0f)
+					.WidthOverride(420.0f)
 					.Visibility_Lambda([this]()
 					{
 						return ActivePage == EPanelPage::Workflows ? EVisibility::Visible : EVisibility::Collapsed;
@@ -763,6 +875,7 @@ void STADebugViewPanel::Construct(const FArguments& InArgs)
 				[
 					MakeLiveStatusBar()
 				]
+			]
 			]
 		]
 	];
@@ -1189,7 +1302,7 @@ TSharedRef<SWidget> STADebugViewPanel::MakeSearchCategoryMenu()
 	AddCategory(
 		ESearchCategory::All,
 		LOCTEXT("SearchCategoryAll", "All"),
-		LOCTEXT("SearchCategoryAllTooltip", "Search Workflows, Debug Views, and Advanced commands."));
+		LOCTEXT("SearchCategoryAllTooltip", "Search Workflows, Debug Views, curated Commands, and registered UE console commands."));
 	AddCategory(
 		ESearchCategory::Workflows,
 		LOCTEXT("SearchCategoryWorkflows", "Workflows"),
@@ -1199,9 +1312,9 @@ TSharedRef<SWidget> STADebugViewPanel::MakeSearchCategoryMenu()
 		LOCTEXT("SearchCategoryDebugViews", "Debug Views"),
 		LOCTEXT("SearchCategoryDebugViewsTooltip", "Search viewport visualization actions."));
 	AddCategory(
-		ESearchCategory::Advanced,
-		LOCTEXT("SearchCategoryAdvanced", "Advanced"),
-		LOCTEXT("SearchCategoryAdvancedTooltip", "Search utility and console-command actions."));
+		ESearchCategory::Commands,
+		LOCTEXT("SearchCategoryCommands", "Commands"),
+		LOCTEXT("SearchCategoryCommandsTooltip", "Search curated commands and all console objects registered in the current UE session."));
 
 	return MenuBuilder.MakeWidget();
 }
@@ -1214,8 +1327,8 @@ FText STADebugViewPanel::GetSearchCategoryLabel() const
 		return LOCTEXT("SearchCategoryLabelWorkflows", "Workflows");
 	case ESearchCategory::DebugViews:
 		return LOCTEXT("SearchCategoryLabelDebugViews", "Debug Views");
-	case ESearchCategory::Advanced:
-		return LOCTEXT("SearchCategoryLabelAdvanced", "Advanced");
+	case ESearchCategory::Commands:
+		return LOCTEXT("SearchCategoryLabelCommands", "Commands");
 	default:
 		return LOCTEXT("SearchCategoryLabelAll", "All");
 	}
@@ -1569,7 +1682,7 @@ TSharedRef<SWidget> STADebugViewPanel::MakeNavigationBar()
 		.AutoHeight()
 		.Padding(0.0f, 0.0f, 0.0f, 4.0f)
 		[
-			MakeNavigationButton(LOCTEXT("NavAdvanced", "Advanced"), EPanelPage::Advanced)
+			MakeNavigationButton(LOCTEXT("NavCommands", "Commands"), EPanelPage::Commands)
 		]
 		+ SVerticalBox::Slot()
 		.AutoHeight()
@@ -1595,8 +1708,8 @@ TSharedRef<SWidget> STADebugViewPanel::MakeNavigationButton(const FText& Label, 
 	case EPanelPage::DebugViews:
 		Tooltip = LOCTEXT("NavDebugViewsTooltip", "Viewport visualizations grouped by rendering system.");
 		break;
-	case EPanelPage::Advanced:
-		Tooltip = LOCTEXT("NavAdvancedTooltip", "Lower-frequency VSM, geometry, and performance commands.");
+	case EPanelPage::Commands:
+		Tooltip = LOCTEXT("NavCommandsTooltip", "Curated debug commands with on-demand access to all registered UE console commands.");
 		break;
 	case EPanelPage::Diagnostics:
 		Tooltip = LOCTEXT("NavDiagnosticsTooltip", "Validate workflow Ids, action values, and stale references.");
@@ -1615,7 +1728,7 @@ TSharedRef<SWidget> STADebugViewPanel::MakeNavigationButton(const FText& Label, 
 	case EPanelPage::DebugViews:
 		IconName = TEXT("LevelEditor.Tabs.Viewports");
 		break;
-	case EPanelPage::Advanced:
+	case EPanelPage::Commands:
 		IconName = TEXT("Icons.Settings");
 		break;
 	case EPanelPage::Diagnostics:
@@ -1719,12 +1832,12 @@ FText STADebugViewPanel::GetPageCountText(EPanelPage Page) const
 			}
 		}
 		break;
-	case EPanelPage::Advanced:
+	case EPanelPage::Commands:
 		for (const TADebugViewTool::FDebugViewGroup& Group : TADebugViewTool::GetPresetGroups())
 		{
 			for (const TADebugViewTool::FDebugViewPreset& Preset : Group.Presets)
 			{
-				if (IsAdvancedPagePreset(Preset))
+				if (IsCommandsPagePreset(Preset))
 				{
 					++Count;
 				}
@@ -1758,7 +1871,7 @@ TSharedRef<SWidget> STADebugViewPanel::MakeWorkflowsPage()
 
 	Content->AddSlot()
 		.AutoHeight()
-		.Padding(0.0f, 0.0f, 0.0f, 14.0f)
+		.Padding(0.0f, 0.0f, 0.0f, StandardSectionGap)
 		[
 			SNew(SHorizontalBox)
 			+ SHorizontalBox::Slot()
@@ -1784,14 +1897,18 @@ TSharedRef<SWidget> STADebugViewPanel::MakeWorkflowsPage()
 			.AutoWidth()
 			.VAlign(VAlign_Center)
 			[
-				SNew(SButton)
-				.ContentPadding(FMargin(12.0f, 6.0f))
-				.Text(LOCTEXT("NewWorkflowButton", "+  New Workflow"))
+				SNew(SBox)
+				.HeightOverride(StandardControlHeight)
+				[
+					SNew(SButton)
+					.ContentPadding(FMargin(12.0f, 4.0f))
+					.Text(LOCTEXT("NewWorkflowButton", "+  New Workflow"))
 				.OnClicked_Lambda([this]()
 				{
 					AddNewCustomPreset();
 					return FReply::Handled();
 				})
+				]
 			]
 		];
 
@@ -1854,7 +1971,16 @@ TSharedRef<SWidget> STADebugViewPanel::MakeContextInspector()
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			[
-				MakeHorizontalSeparator()
+				SNew(SBox)
+				.Visibility_Lambda([this]()
+				{
+					// The editor already has its own rounded outline. Hiding the
+					// inspector separator prevents two strokes from stacking above it.
+					return bWorkflowEditorOpen ? EVisibility::Collapsed : EVisibility::Visible;
+				})
+				[
+					MakeHorizontalSeparator()
+				]
 			]
 			+ SVerticalBox::Slot()
 			.FillHeight(1.0f)
@@ -2209,14 +2335,17 @@ TSharedRef<SWidget> STADebugViewPanel::MakeDebugViewRow(const TADebugViewTool::F
 		break;
 	}
 
-	return SNew(SBorder)
-		.BorderImage_Lambda([this, PresetId]()
-		{
-			return GetListRowBrush(IsDebugPresetActiveCached(PresetId));
-		})
-		.Padding(FMargin(2.0f, 1.0f))
+	return SNew(SBox)
+		.MinDesiredHeight(StandardListRowMinHeight)
 		[
-			SNew(SHorizontalBox)
+			SNew(SBorder)
+			.BorderImage_Lambda([this, PresetId]()
+			{
+				return GetListRowBrush(IsDebugPresetActiveCached(PresetId));
+			})
+			.Padding(FMargin(2.0f, 1.0f))
+			[
+				SNew(SHorizontalBox)
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
 			.VAlign(VAlign_Center)
@@ -2304,10 +2433,11 @@ TSharedRef<SWidget> STADebugViewPanel::MakeDebugViewRow(const TADebugViewTool::F
 						]
 					]
 			]
+		]
 		];
 }
 
-TSharedRef<SWidget> STADebugViewPanel::MakeAdvancedPage()
+TSharedRef<SWidget> STADebugViewPanel::MakeCommandsPage()
 {
 	TSharedRef<SVerticalBox> Content = SNew(SVerticalBox);
 
@@ -2315,7 +2445,7 @@ TSharedRef<SWidget> STADebugViewPanel::MakeAdvancedPage()
 		.AutoHeight()
 		.Padding(0.0f, 0.0f, 0.0f, 4.0f)
 		[
-			MakeSectionHeading(LOCTEXT("AdvancedHeading", "Advanced"))
+			MakeSectionHeading(LOCTEXT("CommandsHeading", "Commands"))
 		];
 
 	Content->AddSlot()
@@ -2323,18 +2453,40 @@ TSharedRef<SWidget> STADebugViewPanel::MakeAdvancedPage()
 		.Padding(0.0f, 0.0f, 0.0f, 12.0f)
 		[
 			SNew(STextBlock)
-				.Text(LOCTEXT("AdvancedDescription", "VSM, geometry, and performance commands, kept out of the day-to-day workflow lists."))
+				.Text(LOCTEXT(
+					"CommandsDescription",
+					"Curated VSM, geometry, and performance commands. Use the global search to find any console command or CVar registered in the current UE session."))
 				.Font(FAppStyle::GetFontStyle(TEXT("SmallFont")))
 				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 				.AutoWrapText(true)
 		];
 
-	// One flat list of console-command presets, regardless of source group.
+	// Keep the page intentionally small and curated. The global search provides
+	// on-demand access to the much larger runtime console registry.
 	for (const TADebugViewTool::FDebugViewGroup& Group : TADebugViewTool::GetPresetGroups())
 	{
+		const bool bHasCommands = Group.Presets.ContainsByPredicate([](const TADebugViewTool::FDebugViewPreset& Preset)
+		{
+			return IsCommandsPagePreset(Preset);
+		});
+		if (!bHasCommands)
+		{
+			continue;
+		}
+
+		Content->AddSlot()
+			.AutoHeight()
+			.Padding(0.0f, 4.0f, 0.0f, 6.0f)
+			[
+				SNew(STextBlock)
+					.Text(Group.Label)
+					.Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
+					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+			];
+
 		for (const TADebugViewTool::FDebugViewPreset& Preset : Group.Presets)
 		{
-			if (!IsAdvancedPagePreset(Preset))
+			if (!IsCommandsPagePreset(Preset))
 			{
 				continue;
 			}
@@ -2356,11 +2508,14 @@ TSharedRef<SWidget> STADebugViewPanel::MakeUtilityRow(const TADebugViewTool::FDe
 	const FName PresetId = Preset.Id;
 	const FTADebugViewQuickAction FavoriteAction(ETADebugViewQuickActionType::DebugPreset, PresetId.ToString());
 
-	return SNew(SBorder)
-		.BorderImage(GetInsetPanelBrush())
-		.Padding(FMargin(12.0f, 9.0f))
+	return SNew(SBox)
+		.MinDesiredHeight(StandardListRowMinHeight)
 		[
-			SNew(SHorizontalBox)
+			SNew(SBorder)
+			.BorderImage(GetInsetPanelBrush())
+			.Padding(FMargin(12.0f, 8.0f))
+			[
+				SNew(SHorizontalBox)
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
 			.VAlign(VAlign_Center)
@@ -2413,6 +2568,7 @@ TSharedRef<SWidget> STADebugViewPanel::MakeUtilityRow(const TADebugViewTool::FDe
 						return FReply::Handled();
 					})
 			]
+		]
 		];
 }
 
@@ -2421,7 +2577,7 @@ TSharedRef<SWidget> STADebugViewPanel::MakeHelpBlock(const FText& Heading, const
 	TSharedRef<SVerticalBox> Block = SNew(SVerticalBox)
 		+ SVerticalBox::Slot()
 		.AutoHeight()
-		.Padding(0.0f, 0.0f, 0.0f, 6.0f)
+		.Padding(0.0f, 0.0f, 0.0f, StandardSectionGap)
 		[
 			MakeSectionHeading(Heading)
 		];
@@ -2513,7 +2669,7 @@ TSharedRef<SWidget> STADebugViewPanel::MakeHelpPage()
 			.AutoHeight()
 			[
 				SNew(SUniformGridPanel)
-				.SlotPadding(FMargin(0.0f, 0.0f, 28.0f, 0.0f))
+				.SlotPadding(FMargin(0.0f, 0.0f, 24.0f, StandardSectionGap))
 				+ SUniformGridPanel::Slot(0, 0)
 				[
 					MakeHelpBlock(
@@ -2569,7 +2725,7 @@ TSharedRef<SWidget> STADebugViewPanel::MakeDiagnosticsPage()
 	TSharedRef<SVerticalBox> Content = SNew(SVerticalBox)
 		+ SVerticalBox::Slot()
 		.AutoHeight()
-		.Padding(0.0f, 0.0f, 0.0f, 6.0f)
+		.Padding(0.0f, 0.0f, 0.0f, StandardSectionGap)
 		[
 			SNew(SHorizontalBox)
 			+ SHorizontalBox::Slot()
@@ -2597,25 +2753,35 @@ TSharedRef<SWidget> STADebugViewPanel::MakeDiagnosticsPage()
 			.AutoWidth()
 			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
 			[
-				SNew(SButton)
-				.Text(LOCTEXT("CleanStaleActionsButton", "Clean Stale References"))
+				SNew(SBox)
+				.HeightOverride(StandardControlHeight)
+				[
+					SNew(SButton)
+					.Text(LOCTEXT("CleanStaleActionsButton", "Clean Stale References"))
+					.ContentPadding(FMargin(10.0f, 4.0f))
 				.OnClicked_Lambda([this]()
 				{
 					RemoveStaleQuickActions();
 					RebuildDiagnostics();
 					return FReply::Handled();
 				})
+				]
 			]
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
 			[
-				SNew(SButton)
-				.Text(LOCTEXT("RefreshDiagnosticsButton", "Refresh"))
+				SNew(SBox)
+				.HeightOverride(StandardControlHeight)
+				[
+					SNew(SButton)
+					.Text(LOCTEXT("RefreshDiagnosticsButton", "Refresh"))
+					.ContentPadding(FMargin(10.0f, 4.0f))
 				.OnClicked_Lambda([this]()
 				{
 					RebuildDiagnostics();
 					return FReply::Handled();
 				})
+				]
 			]
 		]
 		+ SVerticalBox::Slot()
@@ -2810,7 +2976,7 @@ TSharedRef<SWidget> STADebugViewPanel::MakeDebugGroupButton(const TADebugViewToo
 	int32 GroupPresetCount = 0;
 	for (const TADebugViewTool::FDebugViewPreset& Preset : Group.Presets)
 	{
-		if (!IsAdvancedPagePreset(Preset))
+		if (!IsCommandsPagePreset(Preset))
 		{
 			++GroupPresetCount;
 		}
@@ -2877,50 +3043,74 @@ TSharedRef<SWidget> STADebugViewPanel::MakeDebugGroupButton(const TADebugViewToo
 TSharedRef<SWidget> STADebugViewPanel::MakeCustomPresetEditor()
 {
 	return SNew(SBorder)
-		.BorderImage(GetFlatSectionBrush())
-		.Padding(0.0f)
+		.BorderImage(GetContentPanelBrush())
+		.Padding(12.0f)
 		[
 			SNew(SVerticalBox)
 			+ SVerticalBox::Slot()
 			.AutoHeight()
-			.Padding(0.0f, 0.0f, 0.0f, 6.0f)
+			.Padding(0.0f, 0.0f, 0.0f, StandardSectionGap)
 			[
-				SNew(STextBlock)
-				.Text_Lambda([this]()
-				{
-					return GetCustomPresetEditorTitle();
-				})
-				.Font(FAppStyle::GetFontStyle(TEXT("NormalFontBold")))
-			]
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(0.0f, 0.0f, 0.0f, 4.0f)
-			[
-				SNew(STextBlock)
-					.Text_Lambda([this]()
-					{
-						return TADebugViewTool::GetWorkflowSourceLabel(EditingWorkflowSource);
-					})
-					.Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
-					.ColorAndOpacity_Lambda([this]()
-					{
-						return EditingWorkflowSource == TADebugViewTool::EWorkflowPresetSource::Modified
-							? FSlateColor(FLinearColor::FromSRGBColor(FColor(222, 161, 50)))
-							: EditingWorkflowSource == TADebugViewTool::EWorkflowPresetSource::UserCreated
-								? FSlateColor(FLinearColor::FromSRGBColor(FColor(53, 175, 109)))
-								: FSlateColor::UseSubduedForeground();
-					})
-			]
-			// Explains what saving will do to the override file for this source.
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(0.0f, 0.0f, 0.0f, 8.0f)
-			[
-				SNew(STextBlock)
-					.Text(this, &STADebugViewPanel::GetEditorSourceNoteText)
-					.Font(FAppStyle::GetFontStyle(TEXT("SmallFont")))
-					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-					.AutoWrapText(true)
+				SNew(SBorder)
+				.BorderImage(GetInsetPanelBrush())
+				.Padding(12.0f)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 0.0f, 0.0f, 8.0f)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.FillWidth(1.0f)
+						.VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Text_Lambda([this]()
+							{
+								return GetCustomPresetEditorTitle();
+							})
+							.Font(FAppStyle::GetFontStyle(TEXT("NormalFontBold")))
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						[
+							SNew(SBorder)
+							.BorderImage_Lambda([this]()
+							{
+								return GetWorkflowSourceBadgeBrush(EditingWorkflowSource);
+							})
+							.Padding(FMargin(7.0f, 3.0f))
+							[
+								SNew(STextBlock)
+								.Text_Lambda([this]()
+								{
+									return TADebugViewTool::GetWorkflowSourceLabel(EditingWorkflowSource);
+								})
+								.Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
+								.ColorAndOpacity_Lambda([this]()
+								{
+									return EditingWorkflowSource == TADebugViewTool::EWorkflowPresetSource::Modified
+										? FSlateColor(FLinearColor::FromSRGBColor(FColor(222, 161, 50)))
+										: EditingWorkflowSource == TADebugViewTool::EWorkflowPresetSource::UserCreated
+											? FSlateColor(FLinearColor::FromSRGBColor(FColor(53, 175, 109)))
+											: FSlateColor::UseSubduedForeground();
+								})
+							]
+						]
+					]
+					// Explains what saving will do to the override file for this source.
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(STextBlock)
+						.Text(this, &STADebugViewPanel::GetEditorSourceNoteText)
+						.Font(FAppStyle::GetFontStyle(TEXT("SmallFont")))
+						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+						.AutoWrapText(true)
+					]
+				]
 			]
 			+ SVerticalBox::Slot()
 			.AutoHeight()
@@ -2958,7 +3148,13 @@ TSharedRef<SWidget> STADebugViewPanel::MakeCustomPresetEditor()
 			]
 			+ SVerticalBox::Slot()
 			.AutoHeight()
-			.Padding(0.0f, 0.0f, 0.0f, 6.0f)
+			.Padding(0.0f, 0.0f, 0.0f, StandardFieldGap)
+			[
+				MakeWorkflowIconPicker()
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 0.0f, 0.0f, StandardFieldGap)
 			[
 				MakeEditorTextField(
 					LOCTEXT("CustomPresetDescriptionLabel", "Description"),
@@ -2974,82 +3170,219 @@ TSharedRef<SWidget> STADebugViewPanel::MakeCustomPresetEditor()
 			]
 			+ SVerticalBox::Slot()
 			.AutoHeight()
-			.Padding(0.0f, 0.0f, 0.0f, 6.0f)
+			.Padding(0.0f, 0.0f, 0.0f, StandardFieldGap)
 			[
 				MakeActionListEditor(LOCTEXT("CustomPresetActivateLabel", "Activate Actions"), EditingActivateActions, ActivateActionListBox, ECustomActionListKind::Activate)
 			]
 			+ SVerticalBox::Slot()
 			.AutoHeight()
-			.Padding(0.0f, 0.0f, 0.0f, 8.0f)
+			.Padding(0.0f, 0.0f, 0.0f, StandardSectionGap)
 			[
 				MakeActionListEditor(LOCTEXT("CustomPresetRestoreLabel", "Restore Actions"), EditingDeactivateActions, DeactivateActionListBox, ECustomActionListKind::Deactivate)
 			]
 			+ SVerticalBox::Slot()
 			.AutoHeight()
+			.Padding(0.0f, 4.0f, 0.0f, 0.0f)
 			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.Padding(0.0f, 0.0f, 6.0f, 0.0f)
+				SNew(SUniformGridPanel)
+				.SlotPadding(FMargin(4.0f, 0.0f))
+				+ SUniformGridPanel::Slot(0, 0)
 				[
-					SNew(SButton)
-					.Text_Lambda([this]()
-					{
-						return EditingWorkflowSource == TADebugViewTool::EWorkflowPresetSource::Modified
-							? LOCTEXT("ResetWorkflowToDefaultButton", "Reset to Default")
-							: LOCTEXT("DeleteWorkflowButton", "Delete Workflow");
-					})
+					SNew(SBox)
+					.HeightOverride(EditorControlHeight)
 					.Visibility_Lambda([this]()
 					{
 						return !bCreatingWorkflow && EditingWorkflowSource != TADebugViewTool::EWorkflowPresetSource::Default
 							? EVisibility::Visible
 							: EVisibility::Collapsed;
 					})
-					.OnClicked_Lambda([this]()
-					{
-						if (EditingWorkflowSource == TADebugViewTool::EWorkflowPresetSource::Modified)
+					[
+						SNew(SButton)
+						.ButtonStyle(GetEditorDangerButtonStyle())
+						.HAlign(HAlign_Center)
+						.VAlign(VAlign_Center)
+						.Text_Lambda([this]()
 						{
-							ResetEditedWorkflowToDefault();
-						}
-						else
+							return EditingWorkflowSource == TADebugViewTool::EWorkflowPresetSource::Modified
+								? LOCTEXT("ResetWorkflowToDefaultButton", "Reset to Default")
+								: LOCTEXT("DeleteWorkflowButton", "Delete Workflow");
+						})
+						.OnClicked_Lambda([this]()
 						{
-							DeleteEditedCustomPreset();
-						}
-						return FReply::Handled();
-					})
+							if (EditingWorkflowSource == TADebugViewTool::EWorkflowPresetSource::Modified)
+							{
+								ResetEditedWorkflowToDefault();
+							}
+							else
+							{
+								DeleteEditedCustomPreset();
+							}
+							return FReply::Handled();
+						})
+					]
 				]
-				+ SHorizontalBox::Slot()
-				.FillWidth(1.0f)
+				+ SUniformGridPanel::Slot(1, 0)
 				[
-					SNullWidget::NullWidget
-				]
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.Padding(0.0f, 0.0f, 6.0f, 0.0f)
-				[
-					SNew(SButton)
-					.Text(LOCTEXT("CancelWorkflowEditButton", "Cancel"))
-					.OnClicked_Lambda([this]()
-					{
-						CancelWorkflowEditing();
-						return FReply::Handled();
-					})
+					SNew(SBox)
+					.HeightOverride(EditorControlHeight)
+					[
+						SNew(SButton)
+						.ButtonStyle(GetEditorSecondaryButtonStyle())
+						.HAlign(HAlign_Center)
+						.VAlign(VAlign_Center)
+						.Text(LOCTEXT("CancelWorkflowEditButton", "Cancel"))
+						.OnClicked_Lambda([this]()
+						{
+							CancelWorkflowEditing();
+							return FReply::Handled();
+						})
+					]
 				]
 				// Deliberately always enabled: SaveEditedCustomPreset reports why a save
 				// was rejected inline, which a disabled button cannot do.
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
+				+ SUniformGridPanel::Slot(2, 0)
 				[
-					SNew(SButton)
-					.Text(LOCTEXT("SaveWorkflowButton", "Save Workflow"))
-					.ButtonColorAndOpacity(FLinearColor::FromSRGBColor(FColor(0, 112, 224)))
-					.OnClicked_Lambda([this]()
-					{
-						SaveEditedCustomPreset();
-						return FReply::Handled();
-					})
+					SNew(SBox)
+					.HeightOverride(EditorControlHeight)
+					[
+						SNew(SButton)
+						.ButtonStyle(GetEditorPrimaryButtonStyle())
+						.HAlign(HAlign_Center)
+						.VAlign(VAlign_Center)
+						.Text(LOCTEXT("SaveWorkflowButton", "Save Workflow"))
+						.OnClicked_Lambda([this]()
+						{
+							SaveEditedCustomPreset();
+							return FReply::Handled();
+						})
+					]
 				]
 			]
+		];
+}
+
+TSharedRef<SWidget> STADebugViewPanel::MakeWorkflowIconPicker()
+{
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 2.0f)
+		[
+			SNew(STextBlock)
+				.Text(LOCTEXT("WorkflowIconLabel", "Workflow Icon"))
+				.Font(FAppStyle::GetFontStyle(TEXT("SmallFont")))
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		[
+			SNew(SBox)
+			.HeightOverride(EditorControlHeight)
+			[
+				SAssignNew(WorkflowIconPickerButton, SComboButton)
+				.ContentPadding(FMargin(9.0f, 6.0f))
+				.OnGetMenuContent(this, &STADebugViewPanel::MakeWorkflowIconMenu)
+				.ToolTipText(LOCTEXT("WorkflowIconPickerTooltip", "Choose the icon shown on this Workflow card, Favorites, and search results."))
+				.ButtonContent()
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+					[
+						SNew(SBox)
+						.WidthOverride(20.0f)
+						.HeightOverride(20.0f)
+						[
+							SNew(SImage)
+								.Image_Lambda([this]()
+								{
+									return FAppStyle::GetBrush(EditingIconName);
+								})
+						]
+					]
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.0f)
+					.VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+							.Text_Lambda([this]()
+							{
+								return GetWorkflowIconLabel(EditingIconName);
+							})
+							.Font(FAppStyle::GetFontStyle(TEXT("NormalFont")))
+					]
+				]
+			]
+		];
+}
+
+TSharedRef<SWidget> STADebugViewPanel::MakeWorkflowIconMenu()
+{
+	TSharedRef<SUniformGridPanel> IconGrid = SNew(SUniformGridPanel)
+		.SlotPadding(FMargin(3.0f));
+
+	constexpr int32 ColumnCount = 2;
+	const TArray<FWorkflowIconOption>& Options = GetWorkflowIconOptions();
+	for (int32 OptionIndex = 0; OptionIndex < Options.Num(); ++OptionIndex)
+	{
+		const FName IconName = Options[OptionIndex].IconName;
+		const FText IconLabel = FText::FromString(Options[OptionIndex].Label);
+		IconGrid->AddSlot(OptionIndex % ColumnCount, OptionIndex / ColumnCount)
+		[
+			SNew(SButton)
+				.ContentPadding(FMargin(8.0f, 7.0f))
+				.ButtonColorAndOpacity_Lambda([this, IconName]()
+				{
+					return EditingIconName == IconName
+						? FLinearColor::FromSRGBColor(FColor(0, 112, 224))
+						: FLinearColor::White;
+				})
+				.ToolTipText(FText::FromName(IconName))
+				.OnClicked_Lambda([this, IconName]()
+				{
+					EditingIconName = IconName;
+					if (WorkflowIconPickerButton.IsValid())
+					{
+						WorkflowIconPickerButton->SetIsOpen(false);
+					}
+					return FReply::Handled();
+				})
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+					[
+						SNew(SBox)
+						.WidthOverride(20.0f)
+						.HeightOverride(20.0f)
+						[
+							SNew(SImage)
+								.Image(FAppStyle::GetBrush(IconName))
+						]
+					]
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.0f)
+					.VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+							.Text(IconLabel)
+					]
+				]
+		];
+	}
+
+	return SNew(SBox)
+		.WidthOverride(380.0f)
+		[
+			SNew(SBorder)
+				.BorderImage(GetInsetPanelBrush())
+				.Padding(6.0f)
+				[
+					IconGrid
+				]
 		];
 }
 
@@ -3075,7 +3408,7 @@ TSharedRef<SWidget> STADebugViewPanel::MakeEditorTextField(
 			.AutoHeight()
 			[
 				SNew(SBox)
-				.HeightOverride(54.0f)
+				.HeightOverride(64.0f)
 				[
 					SNew(SMultiLineEditableTextBox)
 					.Text(Text)
@@ -3089,9 +3422,13 @@ TSharedRef<SWidget> STADebugViewPanel::MakeEditorTextField(
 		Field->AddSlot()
 			.AutoHeight()
 			[
-				SNew(SEditableTextBox)
-				.Text(Text)
-				.OnTextChanged(OnTextChanged)
+				SNew(SBox)
+				.HeightOverride(EditorControlHeight)
+				[
+					SNew(SEditableTextBox)
+					.Text(Text)
+					.OnTextChanged(OnTextChanged)
+				]
 			];
 	}
 
@@ -3112,11 +3449,11 @@ TSharedRef<SWidget> STADebugViewPanel::MakeActionListEditor(
 		]
 		+ SVerticalBox::Slot()
 		.AutoHeight()
-		.Padding(0.0f, 10.0f, 0.0f, 6.0f)
+		.Padding(0.0f, StandardSectionGap, 0.0f, StandardFieldGap)
 		[
 			SNew(STextBlock)
 			.Text(Label)
-			.Font(FAppStyle::GetFontStyle(TEXT("SmallFont")))
+			.Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
 		];
 
 	ActionList->AddSlot()
@@ -3127,16 +3464,23 @@ TSharedRef<SWidget> STADebugViewPanel::MakeActionListEditor(
 
 	ActionList->AddSlot()
 		.AutoHeight()
-		.Padding(0.0f, 3.0f, 0.0f, 0.0f)
+		.Padding(0.0f, 4.0f, 0.0f, 0.0f)
 		[
-			SNew(SButton)
-			.Text(LOCTEXT("AddActionButton", "Add Action"))
+			SNew(SBox)
+			.HeightOverride(EditorControlHeight)
+			[
+				SNew(SButton)
+				.ButtonStyle(GetEditorSecondaryButtonStyle())
+				.HAlign(HAlign_Center)
+				.VAlign(VAlign_Center)
+				.Text(LOCTEXT("AddActionButton", "Add Action"))
 			.OnClicked_Lambda([this, &Actions, ActionListBox, ActionListKind]()
 			{
 				Actions.Add(FTADebugViewCustomAction(ETADebugViewCustomActionType::ViewMode, TEXT("VMI_Lit")));
 				RebuildActionListEditor(Actions, ActionListBox, ActionListKind);
 				return FReply::Handled();
 			})
+			]
 		];
 
 	RebuildActionListEditor(Actions, ActionListBox, ActionListKind);
@@ -3146,28 +3490,41 @@ TSharedRef<SWidget> STADebugViewPanel::MakeActionListEditor(
 
 TSharedRef<SWidget> STADebugViewPanel::MakeActionRow(TArray<FTADebugViewCustomAction>& Actions, int32 ActionIndex, ECustomActionListKind ActionListKind)
 {
-	return SNew(SBorder)
-		.BorderImage(GetInsetPanelBrush())
-		.Padding(4.0f)
+	return SNew(SBox)
+		.HeightOverride(EditorActionRowHeight)
 		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot()
-			.FillWidth(0.36f)
-			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			SNew(SBorder)
+			.BorderImage(GetInsetPanelBrush())
+			.Padding(4.0f)
 			[
-				MakeActionTypeCombo(Actions, ActionIndex, ActionListKind)
+				SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(0.0f, 0.0f, 6.0f, 0.0f)
+			[
+				SNew(SBox)
+				.WidthOverride(120.0f)
+				[
+					MakeActionTypeCombo(Actions, ActionIndex, ActionListKind)
+				]
 			]
 			+ SHorizontalBox::Slot()
-			.FillWidth(0.54f)
-			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			.FillWidth(1.0f)
+			.Padding(0.0f, 0.0f, 6.0f, 0.0f)
 			[
 				MakeActionValueWidget(Actions, ActionIndex)
 			]
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
 			[
-				SNew(SButton)
-				.Text(LOCTEXT("RemoveActionButton", "-"))
+				SNew(SBox)
+				.WidthOverride(EditorControlHeight)
+				[
+					SNew(SButton)
+					.ButtonStyle(GetEditorDangerButtonStyle())
+					.HAlign(HAlign_Center)
+					.VAlign(VAlign_Center)
+					.ToolTipText(LOCTEXT("RemoveActionTooltip", "Remove this action"))
 				.OnClicked_Lambda([this, &Actions, ActionIndex]()
 				{
 					if (Actions.IsValidIndex(ActionIndex))
@@ -3178,6 +3535,17 @@ TSharedRef<SWidget> STADebugViewPanel::MakeActionRow(TArray<FTADebugViewCustomAc
 
 					return FReply::Handled();
 				})
+					[
+						SNew(SBox)
+						.WidthOverride(12.0f)
+						.HeightOverride(12.0f)
+						[
+							SNew(SImage)
+							.Image(FAppStyle::GetBrush(TEXT("Icons.X")))
+						]
+					]
+				]
+			]
 			]
 		];
 }
@@ -3190,7 +3558,8 @@ TSharedRef<SWidget> STADebugViewPanel::MakeActionTypeCombo(TArray<FTADebugViewCu
 		.OnGenerateWidget_Lambda([](TSharedPtr<FActionOption> Option)
 		{
 			return SNew(STextBlock)
-				.Text(FText::FromString(Option.IsValid() ? Option->Label : FString()));
+				.Text(FText::FromString(Option.IsValid() ? Option->Label : FString()))
+				.Justification(ETextJustify::Center);
 		})
 		.OnSelectionChanged_Lambda([this, &Actions, ActionIndex, ActionListKind](TSharedPtr<FActionOption> SelectedOption, ESelectInfo::Type)
 		{
@@ -3217,6 +3586,7 @@ TSharedRef<SWidget> STADebugViewPanel::MakeActionTypeCombo(TArray<FTADebugViewCu
 
 				return FText::FromString(FindActionTypeOption(Actions[ActionIndex].ActionType)->Label);
 			})
+			.Justification(ETextJustify::Center)
 		];
 }
 
@@ -3231,6 +3601,7 @@ TSharedRef<SWidget> STADebugViewPanel::MakeActionValueWidget(TArray<FTADebugView
 	if (Actions[ActionIndex].ActionType == ETADebugViewCustomActionType::Command)
 	{
 		return SNew(SEditableTextBox)
+			.Justification(ETextJustify::Center)
 			.Text_Lambda([&Actions, ActionIndex]()
 			{
 				return Actions.IsValidIndex(ActionIndex) ? FText::FromString(Actions[ActionIndex].Value) : FText::GetEmpty();
@@ -3257,7 +3628,8 @@ TSharedRef<SWidget> STADebugViewPanel::MakeActionValueWidget(TArray<FTADebugView
 		.OnGenerateWidget_Lambda([](TSharedPtr<FActionValueOption> Option)
 		{
 			return SNew(STextBlock)
-				.Text(FText::FromString(Option.IsValid() ? Option->Label : FString()));
+				.Text(FText::FromString(Option.IsValid() ? Option->Label : FString()))
+				.Justification(ETextJustify::Center);
 		})
 		.OnSelectionChanged_Lambda([&Actions, ActionIndex](TSharedPtr<FActionValueOption> SelectedOption, ESelectInfo::Type)
 		{
@@ -3277,6 +3649,7 @@ TSharedRef<SWidget> STADebugViewPanel::MakeActionValueWidget(TArray<FTADebugView
 
 				return FText::FromString(FindActionValueOption(Actions[ActionIndex].ActionType, Actions[ActionIndex].Value)->Label);
 			})
+			.Justification(ETextJustify::Center)
 		];
 }
 
@@ -3344,7 +3717,7 @@ STADebugViewPanel::EPanelPage STADebugViewPanel::MigrateSavedPanelPage(uint8 Sav
 	case 2:
 		return EPanelPage::Workflows;
 	case 3:
-		return EPanelPage::Advanced;
+		return EPanelPage::Commands;
 	case 4:
 		return EPanelPage::Help;
 	case 5:
@@ -3524,7 +3897,11 @@ bool STADebugViewPanel::IsQuickActionActiveCached(const FTADebugViewQuickAction&
 	{
 		return CachedActiveDebugPresetIds.Contains(FName(*QuickAction.Id));
 	}
-	return Executor->GetActiveWorkflowPresetId() == FName(*QuickAction.Id);
+	if (QuickAction.ActionType == ETADebugViewQuickActionType::WorkflowPreset)
+	{
+		return Executor->GetActiveWorkflowPresetId() == FName(*QuickAction.Id);
+	}
+	return false;
 }
 
 bool STADebugViewPanel::IsDebugPresetActiveCached(FName PresetId) const
@@ -3673,6 +4050,7 @@ void STADebugViewPanel::RebuildSearchResults()
 		ESearchCategory Category = ESearchCategory::All;
 	};
 	TArray<FSearchEntry> Entries;
+	TSet<FString> CuratedCommandNames;
 
 	for (const TADebugViewTool::FDebugViewGroup& Group : TADebugViewTool::GetPresetGroups())
 	{
@@ -3682,11 +4060,11 @@ void STADebugViewPanel::RebuildSearchResults()
 			Entry.Action = FTADebugViewQuickAction(ETADebugViewQuickActionType::DebugPreset, Preset.Id.ToString());
 			Entry.Label = Preset.Label;
 			Entry.Tooltip = Preset.Tooltip;
-			const bool bAdvancedPreset = IsAdvancedPagePreset(Preset);
-			Entry.Category = bAdvancedPreset ? ESearchCategory::Advanced : ESearchCategory::DebugViews;
+			const bool bCommandPreset = IsCommandsPagePreset(Preset);
+			Entry.Category = bCommandPreset ? ESearchCategory::Commands : ESearchCategory::DebugViews;
 			Entry.TypeLabel = Group.Label;
-			const FString PageSearchTerms = bAdvancedPreset
-				? TEXT("advanced utility command")
+			const FString PageSearchTerms = bCommandPreset
+				? TEXT("command commands console utility")
 				: TEXT("debug view debug views visualization");
 			Entry.SearchableText = (
 				Preset.Label.ToString()
@@ -3696,7 +4074,64 @@ void STADebugViewPanel::RebuildSearchResults()
 				+ TEXT(" ") + Preset.Id.ToString()
 				+ TEXT(" ") + Preset.VisualizationMode.ToString()
 				+ TEXT(" ") + Preset.Commands).ToLower();
+			if (bCommandPreset)
+			{
+				CuratedCommandNames.Add(Preset.Commands.ToLower());
+			}
 		}
+	}
+
+	// The Commands page stays curated, but search can discover everything that
+	// the current editor session has registered. Requiring two characters avoids
+	// constructing thousands of one-letter CVar results on every key press.
+	if (Query.Len() >= 2
+		&& (SearchCategory == ESearchCategory::All || SearchCategory == ESearchCategory::Commands))
+	{
+		IConsoleManager::Get().ForEachConsoleObjectThatContains(
+			FConsoleObjectVisitor::CreateLambda(
+				[&Entries, &CuratedCommandNames](const TCHAR* Name, IConsoleObject* ConsoleObject)
+				{
+					if (!ConsoleObject || !Name || !*Name)
+					{
+						return;
+					}
+
+					const FString CommandName(Name);
+					if (CuratedCommandNames.Contains(CommandName.ToLower()))
+					{
+						return;
+					}
+
+					IConsoleVariable* ConsoleVariable = ConsoleObject->AsVariable();
+					FString HelpText = ConsoleObject->GetHelp();
+					if (ConsoleVariable)
+					{
+						const FString CurrentValue = ConsoleVariable->GetString();
+						HelpText = HelpText.IsEmpty()
+							? FString::Printf(TEXT("Current value: %s"), *CurrentValue)
+							: FString::Printf(TEXT("Current value: %s\n%s"), *CurrentValue, *HelpText);
+					}
+					else if (HelpText.IsEmpty())
+					{
+						HelpText = TEXT("Registered UE console command.");
+					}
+
+					FSearchEntry& Entry = Entries.AddDefaulted_GetRef();
+					Entry.Action = FTADebugViewQuickAction(
+						ETADebugViewQuickActionType::ConsoleCommand,
+						CommandName);
+					Entry.Label = FText::FromString(CommandName);
+					Entry.Tooltip = FText::FromString(HelpText);
+					Entry.TypeLabel = ConsoleVariable
+						? LOCTEXT("SearchTypeUECVar", "UE CVar")
+						: LOCTEXT("SearchTypeUECommand", "UE Command");
+					Entry.Category = ESearchCategory::Commands;
+					Entry.SearchableText = (
+						CommandName
+						+ TEXT(" ") + HelpText
+						+ TEXT(" console command cvar commands")).ToLower();
+				}),
+			*Query);
 	}
 
 	auto AddWorkflowEntries = [&Entries](const TArray<TADebugViewTool::FWorkflowPreset>& Presets)
@@ -3901,7 +4336,7 @@ void STADebugViewPanel::RebuildSearchResults()
 
 	AddCategorySection(ESearchCategory::Workflows, LOCTEXT("SearchSectionWorkflows", "Workflows"));
 	AddCategorySection(ESearchCategory::DebugViews, LOCTEXT("SearchSectionDebugViews", "Debug Views"));
-	AddCategorySection(ESearchCategory::Advanced, LOCTEXT("SearchSectionAdvanced", "Advanced"));
+	AddCategorySection(ESearchCategory::Commands, LOCTEXT("SearchSectionCommands", "Commands"));
 
 	if (FilteredSearchActions.IsEmpty())
 	{
@@ -3943,11 +4378,14 @@ void STADebugViewPanel::RebuildDiagnostics()
 	{
 		DiagnosticsBox->AddSlot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 6.0f)
 		[
-			SNew(SBorder)
-			.BorderImage(GetInsetPanelBrush())
-			.Padding(FMargin(12.0f, 10.0f))
+			SNew(SBox)
+			.MinDesiredHeight(StandardListRowMinHeight)
 			[
-				SNew(SHorizontalBox)
+				SNew(SBorder)
+				.BorderImage(GetInsetPanelBrush())
+				.Padding(FMargin(12.0f, 8.0f))
+				[
+					SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
@@ -3984,9 +4422,10 @@ void STADebugViewPanel::RebuildDiagnostics()
 					SNew(STextBlock)
 						.Text(TADebugViewTool::GetDiagnosticCheckStatusLabel(Check))
 						.Font(FAppStyle::GetFontStyle(TEXT("MonoFont")))
-						.ColorAndOpacity(TADebugViewTool::GetDiagnosticCheckStatusColor(Check))
+					.ColorAndOpacity(TADebugViewTool::GetDiagnosticCheckStatusColor(Check))
 				]
 			]
+		]
 		];
 	}
 
@@ -4425,11 +4864,11 @@ void STADebugViewPanel::RebuildDebugPresetButtons()
 		return;
 	}
 
-	// Command presets live on the Advanced page, so count only what is listed here.
+	// Command presets live on the Commands page, so count only what is listed here.
 	int32 ListedPresetCount = 0;
 	for (const TADebugViewTool::FDebugViewPreset& Preset : SelectedGroup->Presets)
 	{
-		if (!IsAdvancedPagePreset(Preset))
+		if (!IsCommandsPagePreset(Preset))
 		{
 			++ListedPresetCount;
 		}
@@ -4459,7 +4898,7 @@ void STADebugViewPanel::RebuildDebugPresetButtons()
 
 	for (const TADebugViewTool::FDebugViewPreset& Preset : SelectedGroup->Presets)
 	{
-		if (IsAdvancedPagePreset(Preset))
+		if (IsCommandsPagePreset(Preset))
 		{
 			continue;
 		}

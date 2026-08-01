@@ -18,7 +18,8 @@ UENUM()
 enum class ETADebugViewQuickActionType : uint8
 {
 	DebugPreset,
-	WorkflowPreset
+	WorkflowPreset,
+	ConsoleCommand
 };
 
 USTRUCT()
