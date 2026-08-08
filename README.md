@@ -15,7 +15,8 @@ TA Debug View Tool is an editor-only UE5 plugin for technical artists. It provid
 - **Debug Views**: grouped viewport visualization presets for ViewMode, Nanite, Lumen, VSM, lighting, materials, and geometry.
 - **Commands**: a small curated set of VSM, geometry, and performance commands, grouped for quick access without duplicating the full UE console.
 - **Context Inspector**: inspect, run, edit, reset, or delete the selected workflow without leaving the main panel.
-- **Quick Access**: Favorites above the page navigation, displayed five per page with mouse-wheel paging, clickable page dots, and an all-favorites dropdown.
+- **Quick Access**: Favorites above the page navigation, displayed in responsive pages of five, three, or two items with mouse-wheel paging, clickable page dots, and an all-favorites dropdown.
+- **Responsive UI**: Wide, medium, and compact layouts adapt the navigation rail, Workflow grid, Context Inspector, and vertical density to the available dock size. Per-window DPI compensation follows the panel when it moves between monitors.
 - **Viewport Target**: Active, Perspective, and All target modes for applying debug views across editor viewports.
 - **Keyboard Shortcuts**: fixed shortcuts for opening the panel, resetting debug state, and executing the first five favorites.
 - **Help UI**: in-panel reference for shortcuts, quick access behavior, pages, and viewport targets.
@@ -38,7 +39,7 @@ These commands appear in Editor Preferences > Keyboard Shortcuts under the TA De
 
 The panel opens only from its toolbar/menu command or shortcut. Leaving it open when the editor exits does not make it reopen automatically on the next editor launch.
 
-New standalone panel windows request a `1280 x 820` minimum desired size so the navigation, workflow grid, and inspector open without being compressed.
+The panel has no fixed minimum desired size. It switches between wide, medium, and compact layouts using the effective Slate space after local DPI compensation. On compact layouts, Context Details moves into a popup instead of consuming a fixed right column.
 
 ## Default Favorites
 
@@ -87,7 +88,7 @@ The plugin remembers:
 
 - `TADebugViewToolModule.cpp`: module startup, tab registration, menu and toolbar entries, command binding, shortcut execution.
 - `TADebugViewToolCommands.*`: fixed UE editor commands and default keyboard chords.
-- `STADebugViewPanel.*`: three-column Slate panel, workflow grid, Commands browser, runtime console search, inline context editor, quick access, diagnostics, and help UI.
+- `STADebugViewPanel.*`: responsive Slate panel, DPI compensation, workflow grid, Commands browser, runtime console search, inline context editor, quick access, diagnostics, and help UI.
 - `TADebugViewExecutor.*`: applies view modes, visualization modes, workflow state capture, workflow restore, and console commands.
 - `TADebugViewPresetRegistry.*`: built-in debug view definitions and compiled workflow fallback data.
 - `TADebugViewWorkflowRegistry.*`: loads, validates, merges, migrates, saves, resets, and deletes workflow overrides.

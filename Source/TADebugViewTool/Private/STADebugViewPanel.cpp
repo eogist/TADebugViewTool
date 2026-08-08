@@ -24,6 +24,7 @@
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SDPIScaler.h"
 #include "Widgets/SOverlay.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
@@ -31,6 +32,7 @@
 #include "Widgets/Layout/SWrapBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SNullWidget.h"
+#include "Widgets/SWindow.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Brushes/SlateNoResource.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
@@ -718,20 +720,27 @@ void STADebugViewPanel::Construct(const FArguments& InArgs)
 
 	ChildSlot
 	[
-		SNew(SBox)
-		.MinDesiredWidth(1280.0f)
-		.MinDesiredHeight(820.0f)
+		SNew(SDPIScaler)
+		.DPIScale_Lambda([this]()
+		{
+			return LocalDPIScale;
+		})
 		[
-			SNew(SBorder)
-			.BorderImage(GetAppFrameBrush())
-			.Padding(0.0f)
+			SNew(SBox)
 			[
-				SNew(SVerticalBox)
+				SNew(SBorder)
+				.BorderImage(GetAppFrameBrush())
+				.Padding(0.0f)
+				[
+					SNew(SVerticalBox)
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			[
 				SNew(SBox)
-				.HeightOverride(58.0f)
+				.HeightOverride_Lambda([this]()
+				{
+					return bCompactHeight ? 48.0f : 58.0f;
+				})
 				[
 					SNew(SBorder)
 					.BorderImage(GetFlatSectionBrush())
@@ -750,7 +759,10 @@ void STADebugViewPanel::Construct(const FArguments& InArgs)
 			.AutoHeight()
 			[
 				SNew(SBox)
-				.HeightOverride(64.0f)
+				.HeightOverride_Lambda([this]()
+				{
+					return bCompactHeight ? 52.0f : 64.0f;
+				})
 				[
 					SNew(SBorder)
 					.BorderImage(GetFlatSectionBrush())
@@ -769,7 +781,10 @@ void STADebugViewPanel::Construct(const FArguments& InArgs)
 			.AutoHeight()
 			[
 				SNew(SBox)
-				.HeightOverride(80.0f)
+				.HeightOverride_Lambda([this]()
+				{
+					return bCompactHeight ? 60.0f : 80.0f;
+				})
 				.Visibility_Lambda([]()
 				{
 					const UTADebugViewCustomPresetSettings* Settings = GetDefault<UTADebugViewCustomPresetSettings>();
@@ -796,7 +811,10 @@ void STADebugViewPanel::Construct(const FArguments& InArgs)
 				.Padding(0.0f, 0.0f, 10.0f, 0.0f)
 				[
 					SNew(SBox)
-					.WidthOverride(222.0f)
+					.WidthOverride_Lambda([this]()
+					{
+						return GetNavigationWidth();
+					})
 					[
 						SNew(SBorder)
 						.BorderImage(GetSectionPanelBrush())
@@ -855,13 +873,18 @@ void STADebugViewPanel::Construct(const FArguments& InArgs)
 				.Padding(10.0f, 0.0f, 0.0f, 0.0f)
 				[
 					SNew(SBox)
-					.WidthOverride(420.0f)
+					.WidthOverride_Lambda([this]()
+					{
+						return GetContextInspectorWidth();
+					})
 					.Visibility_Lambda([this]()
 					{
-						return ActivePage == EPanelPage::Workflows ? EVisibility::Visible : EVisibility::Collapsed;
+						return ActivePage == EPanelPage::Workflows && LayoutMode != EPanelLayoutMode::Compact
+							? EVisibility::Visible
+							: EVisibility::Collapsed;
 					})
 					[
-						MakeContextInspector()
+						MakeContextInspector(DesktopContextDetailsBox)
 					]
 				]
 			]
@@ -876,6 +899,7 @@ void STADebugViewPanel::Construct(const FArguments& InArgs)
 					MakeLiveStatusBar()
 				]
 			]
+				]
 			]
 		]
 	];
@@ -903,6 +927,135 @@ void STADebugViewPanel::Construct(const FArguments& InArgs)
 void STADebugViewPanel::RefreshQuickAccess()
 {
 	RebuildQuickAccess();
+}
+
+void STADebugViewPanel::Tick(
+	const FGeometry& AllottedGeometry,
+	const double InCurrentTime,
+	const float InDeltaTime)
+{
+	SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
+
+	DPIWindowRefreshAccumulator += InDeltaTime;
+	if ((!OwningWindow.IsValid() || DPIWindowRefreshAccumulator >= 0.5f) && FSlateApplication::IsInitialized())
+	{
+		OwningWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
+		DPIWindowRefreshAccumulator = 0.0f;
+	}
+
+	const TSharedPtr<SWindow> Window = OwningWindow.Pin();
+	const float NewWindowDPIScale = Window.IsValid() ? Window->GetDPIScaleFactor() : 1.0f;
+	const float NewLocalDPIScale = ResolveLocalDPIScale(NewWindowDPIScale);
+	const bool bDPIScaleChanged = !FMath::IsNearlyEqual(NewLocalDPIScale, LocalDPIScale, 0.001f);
+	const FVector2D NewPanelSize = AllottedGeometry.GetLocalSize() / NewLocalDPIScale;
+	if (NewPanelSize.X <= 0.0f || NewPanelSize.Y <= 0.0f)
+	{
+		return;
+	}
+
+	const EPanelLayoutMode NewLayoutMode = ResolveLayoutMode(NewPanelSize.X);
+	const bool bNewCompactHeight = bCompactHeight
+		? NewPanelSize.Y < 784.0f
+		: NewPanelSize.Y < 736.0f;
+	const int32 NewWorkflowColumnCount = ResolveWorkflowColumnCount(NewPanelSize.X, NewLayoutMode);
+	const bool bLayoutModeChanged = NewLayoutMode != LayoutMode;
+	const bool bHeightModeChanged = bNewCompactHeight != bCompactHeight;
+	const bool bWorkflowColumnsChanged = NewWorkflowColumnCount != WorkflowColumnCount;
+
+	CachedPanelSize = NewPanelSize;
+	WindowDPIScale = NewWindowDPIScale;
+	LocalDPIScale = NewLocalDPIScale;
+	if (!bDPIScaleChanged && !bLayoutModeChanged && !bHeightModeChanged && !bWorkflowColumnsChanged)
+	{
+		return;
+	}
+
+	LayoutMode = NewLayoutMode;
+	bCompactHeight = bNewCompactHeight;
+	WorkflowColumnCount = NewWorkflowColumnCount;
+
+	if (LayoutMode != EPanelLayoutMode::Compact && CompactContextButton.IsValid())
+	{
+		CompactContextButton->SetIsOpen(false);
+	}
+
+	RebuildCustomPresetButtons();
+	if (bLayoutModeChanged)
+	{
+		RebuildQuickAccess();
+		RebuildContextInspector();
+	}
+	Invalidate(EInvalidateWidgetReason::Layout);
+}
+
+STADebugViewPanel::EPanelLayoutMode STADebugViewPanel::ResolveLayoutMode(float PanelWidth) const
+{
+	// Add a small dead band around each breakpoint so resizing a dock tab does
+	// not repeatedly rebuild the grid while hovering on a boundary.
+	switch (LayoutMode)
+	{
+	case EPanelLayoutMode::Wide:
+		if (PanelWidth < 1328.0f)
+		{
+			return PanelWidth < 928.0f ? EPanelLayoutMode::Compact : EPanelLayoutMode::Medium;
+		}
+		break;
+	case EPanelLayoutMode::Medium:
+		if (PanelWidth >= 1392.0f)
+		{
+			return EPanelLayoutMode::Wide;
+		}
+		if (PanelWidth < 928.0f)
+		{
+			return EPanelLayoutMode::Compact;
+		}
+		break;
+	case EPanelLayoutMode::Compact:
+		if (PanelWidth >= 992.0f)
+		{
+			return PanelWidth >= 1392.0f ? EPanelLayoutMode::Wide : EPanelLayoutMode::Medium;
+		}
+		break;
+	}
+
+	return LayoutMode;
+}
+
+int32 STADebugViewPanel::ResolveWorkflowColumnCount(float PanelWidth, EPanelLayoutMode Mode) const
+{
+	const float NavigationWidth = Mode == EPanelLayoutMode::Wide ? 222.0f : Mode == EPanelLayoutMode::Medium ? 64.0f : 56.0f;
+	const float InspectorWidth = Mode == EPanelLayoutMode::Wide ? 420.0f : Mode == EPanelLayoutMode::Medium ? 340.0f : 0.0f;
+	const float BodySpacing = Mode == EPanelLayoutMode::Compact ? 76.0f : 96.0f;
+	const float EstimatedContentWidth = PanelWidth - NavigationWidth - InspectorWidth - BodySpacing;
+	return EstimatedContentWidth >= 620.0f ? 2 : 1;
+}
+
+float STADebugViewPanel::ResolveLocalDPIScale(float InWindowDPIScale) const
+{
+	// SWindow already applies the full platform DPI factor to every Slate widget.
+	// Apply only half of the remaining delta locally so high-DPI displays receive
+	// a useful size increase without multiplying the editor's 150%/200% scale twice.
+	constexpr float CompensationStrength = 0.5f;
+	const float ClampedWindowScale = FMath::Clamp(InWindowDPIScale, 0.75f, 2.5f);
+	return FMath::Clamp(1.0f + ((ClampedWindowScale - 1.0f) * CompensationStrength), 0.875f, 1.5f);
+}
+
+float STADebugViewPanel::GetNavigationWidth() const
+{
+	switch (LayoutMode)
+	{
+	case EPanelLayoutMode::Compact:
+		return 56.0f;
+	case EPanelLayoutMode::Medium:
+		return 64.0f;
+	default:
+		return 222.0f;
+	}
+}
+
+float STADebugViewPanel::GetContextInspectorWidth() const
+{
+	return LayoutMode == EPanelLayoutMode::Wide ? 420.0f : 340.0f;
 }
 
 TSharedRef<SWidget> STADebugViewPanel::MakeHeaderBar()
@@ -943,6 +1096,31 @@ TSharedRef<SWidget> STADebugViewPanel::MakeHeaderBar()
 				.Font(FAppStyle::GetFontStyle(TEXT("DetailsView.CategoryFontStyle")))
 				.RenderTransform(FSlateRenderTransform(FVector2D(0.0f, 1.0f)))
 			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(10.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SBox)
+				.HeightOverride(StandardControlHeight)
+				.Visibility_Lambda([this]()
+				{
+					return LayoutMode == EPanelLayoutMode::Compact && ActivePage == EPanelPage::Workflows
+						? EVisibility::Visible
+						: EVisibility::Collapsed;
+				})
+				[
+					SAssignNew(CompactContextButton, SComboButton)
+					.ContentPadding(FMargin(10.0f, 4.0f))
+					.OnGetMenuContent(this, &STADebugViewPanel::MakeCompactContextInspectorMenu)
+					.ToolTipText(LOCTEXT("CompactContextDetailsTooltip", "Inspect or edit the selected Workflow."))
+					.ButtonContent()
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("CompactContextDetailsButton", "Details"))
+					]
+				]
+			]
 		]
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
@@ -950,6 +1128,12 @@ TSharedRef<SWidget> STADebugViewPanel::MakeHeaderBar()
 		.Padding(16.0f, 0.0f)
 		[
 			SNew(SHorizontalBox)
+			.Visibility_Lambda([this]()
+			{
+				return LayoutMode == EPanelLayoutMode::Wide
+					? EVisibility::Visible
+					: EVisibility::Collapsed;
+			})
 			// Status dot: green while a workflow is applied, subdued when idle.
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
@@ -1047,12 +1231,18 @@ TSharedRef<SWidget> STADebugViewPanel::MakeHeaderBar()
 					.AutoWidth()
 					.VAlign(VAlign_Center)
 					[
-						SNew(STextBlock)
-							.Text(LOCTEXT("HeaderResetChord", "Alt+Shift+0"))
-							.Font(FAppStyle::GetFontStyle(TEXT("MonoFont")))
-							.RenderTransform(FSlateRenderTransform(FVector2D(0.0f, 1.0f)))
-							.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-					]
+					SNew(STextBlock)
+						.Text(LOCTEXT("HeaderResetChord", "Alt+Shift+0"))
+						.Font(FAppStyle::GetFontStyle(TEXT("MonoFont")))
+						.RenderTransform(FSlateRenderTransform(FVector2D(0.0f, 1.0f)))
+						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+						.Visibility_Lambda([this]()
+						{
+							return LayoutMode == EPanelLayoutMode::Wide
+								? EVisibility::Visible
+								: EVisibility::Collapsed;
+						})
+				]
 				]
 		];
 }
@@ -1764,9 +1954,19 @@ TSharedRef<SWidget> STADebugViewPanel::MakeNavigationButton(const FText& Label, 
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				[
+					SNew(SBox)
+					.Visibility_Lambda([this]()
+					{
+						return LayoutMode == EPanelLayoutMode::Wide
+							? EVisibility::Collapsed
+							: EVisibility::HitTestInvisible;
+					})
+				]
+				+ SHorizontalBox::Slot()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
-				.Padding(0.0f, 0.0f, 10.0f, 0.0f)
 				[
 					SNew(SImage)
 					.Image(FAppStyle::GetBrush(IconName))
@@ -1781,10 +1981,17 @@ TSharedRef<SWidget> STADebugViewPanel::MakeNavigationButton(const FText& Label, 
 				+ SHorizontalBox::Slot()
 				.FillWidth(1.0f)
 				.VAlign(VAlign_Center)
+				.Padding(10.0f, 0.0f, 0.0f, 0.0f)
 				[
 					SNew(STextBlock)
 						.Text(Label)
 						.Font(FAppStyle::GetFontStyle(TEXT("NormalFont")))
+						.Visibility_Lambda([this]()
+						{
+							return LayoutMode == EPanelLayoutMode::Wide
+								? EVisibility::Visible
+								: EVisibility::Collapsed;
+						})
 						.ColorAndOpacity_Lambda([this, Page]()
 						{
 							return ActivePage == Page
@@ -1802,6 +2009,23 @@ TSharedRef<SWidget> STADebugViewPanel::MakeNavigationButton(const FText& Label, 
 						.Text_Lambda([this, Page]() { return GetPageCountText(Page); })
 						.Font(FAppStyle::GetFontStyle(TEXT("MonoFont")))
 						.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor(127, 135, 145))))
+						.Visibility_Lambda([this]()
+						{
+							return LayoutMode == EPanelLayoutMode::Wide
+								? EVisibility::Visible
+								: EVisibility::Collapsed;
+						})
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				[
+					SNew(SBox)
+					.Visibility_Lambda([this]()
+					{
+						return LayoutMode == EPanelLayoutMode::Wide
+							? EVisibility::Collapsed
+							: EVisibility::HitTestInvisible;
+					})
 				]
 			]
 		];
@@ -1901,11 +2125,17 @@ TSharedRef<SWidget> STADebugViewPanel::MakeWorkflowsPage()
 				.HeightOverride(StandardControlHeight)
 				[
 					SNew(SButton)
-					.ContentPadding(FMargin(12.0f, 4.0f))
+					.ButtonStyle(GetEditorPrimaryButtonStyle())
+					.HAlign(HAlign_Center)
+					.VAlign(VAlign_Center)
 					.Text(LOCTEXT("NewWorkflowButton", "+  New Workflow"))
 				.OnClicked_Lambda([this]()
 				{
 					AddNewCustomPreset();
+					if (LayoutMode == EPanelLayoutMode::Compact && CompactContextButton.IsValid())
+					{
+						CompactContextButton->SetIsOpen(true);
+					}
 					return FReply::Handled();
 				})
 				]
@@ -1936,7 +2166,7 @@ TSharedRef<SWidget> STADebugViewPanel::MakeWorkflowsPage()
 	return Content;
 }
 
-TSharedRef<SWidget> STADebugViewPanel::MakeContextInspector()
+TSharedRef<SWidget> STADebugViewPanel::MakeContextInspector(TSharedPtr<SVerticalBox>& OutContextDetailsBox)
 {
 	return SNew(SBorder)
 		.BorderImage(GetSectionPanelBrush())
@@ -1991,10 +2221,25 @@ TSharedRef<SWidget> STADebugViewPanel::MakeContextInspector()
 					SNew(SBox)
 						.Padding(14.0f)
 						[
-							SAssignNew(ContextDetailsBox, SVerticalBox)
+							SAssignNew(OutContextDetailsBox, SVerticalBox)
 						]
 				]
 			]
+		];
+}
+
+TSharedRef<SWidget> STADebugViewPanel::MakeCompactContextInspectorMenu()
+{
+	const float PopupWidth = FMath::Clamp(CachedPanelSize.X - 32.0f, 320.0f, 420.0f);
+	const float PopupHeight = FMath::Clamp(CachedPanelSize.Y - 96.0f, 360.0f, 680.0f);
+	TSharedRef<SWidget> Inspector = MakeContextInspector(CompactContextDetailsBox);
+	RebuildContextInspectorBox(CompactContextDetailsBox);
+
+	return SNew(SBox)
+		.WidthOverride(PopupWidth)
+		.HeightOverride(PopupHeight)
+		[
+			Inspector
 		];
 }
 
@@ -4514,7 +4759,9 @@ bool STADebugViewPanel::ChangeQuickAccessPage(int32 PageDelta)
 		}
 	}
 
-	const int32 FavoritesPerPage = TADebugViewTool::FavoriteShortcutCount;
+	const int32 FavoritesPerPage = LayoutMode == EPanelLayoutMode::Compact
+		? 2
+		: LayoutMode == EPanelLayoutMode::Medium ? 3 : TADebugViewTool::FavoriteShortcutCount;
 	const int32 PageCount = FMath::Max(
 		1,
 		FMath::DivideAndRoundUp(ValidFavoriteCount, FavoritesPerPage));
@@ -4573,7 +4820,9 @@ void STADebugViewPanel::RebuildQuickAccess()
 		return;
 	}
 
-	const int32 FavoritesPerPage = TADebugViewTool::FavoriteShortcutCount;
+	const int32 FavoritesPerPage = LayoutMode == EPanelLayoutMode::Compact
+		? 2
+		: LayoutMode == EPanelLayoutMode::Medium ? 3 : TADebugViewTool::FavoriteShortcutCount;
 	const int32 PageCount = FMath::DivideAndRoundUp(ValidFavorites.Num(), FavoritesPerPage);
 	QuickAccessPageIndex = FMath::Clamp(QuickAccessPageIndex, 0, PageCount - 1);
 	const int32 PageStartIndex = QuickAccessPageIndex * FavoritesPerPage;
@@ -4625,7 +4874,7 @@ void STADebugViewPanel::RebuildQuickAccess()
 		.Padding(0.0f, 0.0f, 8.0f, 0.0f)
 		[
 			SNew(SBox)
-			.WidthOverride(160.0f)
+			.WidthOverride(LayoutMode == EPanelLayoutMode::Compact ? 96.0f : LayoutMode == EPanelLayoutMode::Medium ? 120.0f : 160.0f)
 			.VAlign(VAlign_Center)
 			[
 				SNew(SVerticalBox)
@@ -4684,7 +4933,7 @@ void STADebugViewPanel::RebuildQuickAccess()
 		.Padding(6.0f, 0.0f, 0.0f, 0.0f)
 		[
 			SNew(SBox)
-			.WidthOverride(124.0f)
+			.WidthOverride(LayoutMode == EPanelLayoutMode::Compact ? 96.0f : LayoutMode == EPanelLayoutMode::Medium ? 108.0f : 124.0f)
 			.HeightOverride(42.0f)
 			[
 				SAssignNew(QuickAccessFavoritesButton, SComboButton)
@@ -4747,12 +4996,12 @@ void STADebugViewPanel::RebuildCustomPresetButtons()
 			continue;
 		}
 
-		const int32 Column = VisibleWorkflowIndex % 2;
-		const int32 Row = VisibleWorkflowIndex / 2;
+		const int32 Column = VisibleWorkflowIndex % WorkflowColumnCount;
+		const int32 Row = VisibleWorkflowIndex / WorkflowColumnCount;
 		WorkflowGrid->AddSlot(Column, Row)
 			[
 				SNew(SBox)
-				.HeightOverride(128.0f)
+				.MinDesiredHeight(bCompactHeight ? 110.0f : 128.0f)
 				[
 					MakeWorkflowPresetButton(WorkflowPreset)
 				]
@@ -4787,15 +5036,23 @@ void STADebugViewPanel::RebuildCustomPresetButtons()
 
 void STADebugViewPanel::RebuildContextInspector()
 {
-	if (!ContextDetailsBox.IsValid())
+	RebuildContextInspectorBox(
+		LayoutMode == EPanelLayoutMode::Compact
+			? CompactContextDetailsBox
+			: DesktopContextDetailsBox);
+}
+
+void STADebugViewPanel::RebuildContextInspectorBox(const TSharedPtr<SVerticalBox>& TargetBox)
+{
+	if (!TargetBox.IsValid())
 	{
 		return;
 	}
-	ContextDetailsBox->ClearChildren();
+	TargetBox->ClearChildren();
 
 	if (bWorkflowEditorOpen)
 	{
-		ContextDetailsBox->AddSlot()
+		TargetBox->AddSlot()
 			.AutoHeight()
 			[
 				MakeCustomPresetEditor()
@@ -4819,7 +5076,7 @@ void STADebugViewPanel::RebuildContextInspector()
 
 	if (WorkflowPreset)
 	{
-		ContextDetailsBox->AddSlot()
+		TargetBox->AddSlot()
 			.AutoHeight()
 			[
 				MakeWorkflowDetails(*WorkflowPreset)
@@ -4827,7 +5084,7 @@ void STADebugViewPanel::RebuildContextInspector()
 	}
 	else
 	{
-		ContextDetailsBox->AddSlot()
+		TargetBox->AddSlot()
 			.AutoHeight()
 			[
 				SNew(STextBlock)

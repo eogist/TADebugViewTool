@@ -11,6 +11,7 @@ class SEditableTextBox;
 class SComboButton;
 class SMenuAnchor;
 class SSearchBox;
+class SWindow;
 
 namespace TADebugViewTool
 {
@@ -29,6 +30,10 @@ public:
 
 	void Construct(const FArguments& InArgs);
 	void RefreshQuickAccess();
+	virtual void Tick(
+		const FGeometry& AllottedGeometry,
+		const double InCurrentTime,
+		const float InDeltaTime) override;
 	virtual void OnFocusChanging(
 		const FWeakWidgetPath& PreviousFocusPath,
 		const FWidgetPath& NewWidgetPath,
@@ -46,6 +51,13 @@ private:
 		Help,
 		Diagnostics,
 		Count
+	};
+
+	enum class EPanelLayoutMode : uint8
+	{
+		Compact,
+		Medium,
+		Wide
 	};
 
 	// Translates a saved LastPanelPage value into the current EPanelPage numbering.
@@ -83,7 +95,8 @@ private:
 	TSharedRef<SWidget> MakeQuickAccessFavoritesMenu();
 	TSharedRef<SWidget> MakeFavoriteToggleButton(const FTADebugViewQuickAction& QuickAction);
 	TSharedRef<SWidget> MakeWorkflowsPage();
-	TSharedRef<SWidget> MakeContextInspector();
+	TSharedRef<SWidget> MakeContextInspector(TSharedPtr<SVerticalBox>& OutContextDetailsBox);
+	TSharedRef<SWidget> MakeCompactContextInspectorMenu();
 	TSharedRef<SWidget> MakeWorkflowDetails(const TADebugViewTool::FWorkflowPreset& WorkflowPreset);
 	TSharedRef<SWidget> MakeDebugViewsPage();
 	TSharedRef<SWidget> MakeDebugViewRow(const TADebugViewTool::FDebugViewPreset& Preset);
@@ -114,6 +127,7 @@ private:
 
 	void RebuildCustomPresetButtons();
 	void RebuildContextInspector();
+	void RebuildContextInspectorBox(const TSharedPtr<SVerticalBox>& TargetBox);
 	void RebuildDebugPresetButtons();
 	void RebuildDebugGroupList();
 	void RebuildQuickAccess();
@@ -164,6 +178,11 @@ private:
 	void RefreshDiagnosticsCache();
 	FText GetQuickActionShortcutText(const FTADebugViewQuickAction& QuickAction) const;
 	bool IsWorkflowActive(FName WorkflowId) const;
+	EPanelLayoutMode ResolveLayoutMode(float PanelWidth) const;
+	int32 ResolveWorkflowColumnCount(float PanelWidth, EPanelLayoutMode Mode) const;
+	float ResolveLocalDPIScale(float WindowDPIScale) const;
+	float GetNavigationWidth() const;
+	float GetContextInspectorWidth() const;
 
 	TADebugViewTool::FTADebugViewExecutor* Executor = nullptr;
 	TSharedPtr<SHorizontalBox> QuickAccessBox;
@@ -174,9 +193,11 @@ private:
 	TSharedPtr<SVerticalBox> SearchResultsBox;
 	TSharedPtr<SSearchBox> WorkflowFilterBox;
 	TSharedPtr<SComboButton> WorkflowIconPickerButton;
+	TSharedPtr<SComboButton> CompactContextButton;
 	TSharedPtr<SVerticalBox> DiagnosticsBox;
 	TSharedPtr<SVerticalBox> CustomPresetListBox;
-	TSharedPtr<SVerticalBox> ContextDetailsBox;
+	TSharedPtr<SVerticalBox> DesktopContextDetailsBox;
+	TSharedPtr<SVerticalBox> CompactContextDetailsBox;
 	TSharedPtr<SVerticalBox> DebugPresetListBox;
 	TSharedPtr<SVerticalBox> DebugGroupListBox;
 	TSharedPtr<SVerticalBox> ActivateActionListBox;
@@ -201,6 +222,14 @@ private:
 	FString SearchText;
 	FString WorkflowFilterText;
 	ESearchCategory SearchCategory = ESearchCategory::All;
+	EPanelLayoutMode LayoutMode = EPanelLayoutMode::Wide;
+	FVector2D CachedPanelSize = FVector2D(1280.0f, 820.0f);
+	TWeakPtr<SWindow> OwningWindow;
+	float WindowDPIScale = 1.0f;
+	float LocalDPIScale = 1.0f;
+	float DPIWindowRefreshAccumulator = 0.0f;
+	int32 WorkflowColumnCount = 2;
+	bool bCompactHeight = false;
 	FText CachedTargetStatus;
 	FText CachedViewModeStatus;
 	FText CachedVisualizationStatus;
