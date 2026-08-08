@@ -79,6 +79,15 @@ private:
 		Commands
 	};
 
+	enum class EUpdateCheckState : uint8
+	{
+		NotChecked,
+		Checking,
+		UpToDate,
+		UpdateAvailable,
+		Failed
+	};
+
 	TSharedRef<SWidget> MakeNavigationBar();
 	TSharedRef<SWidget> MakeNavigationButton(const FText& Label, EPanelPage Page);
 	TSharedRef<SWidget> MakeHeaderBar();
@@ -147,6 +156,12 @@ private:
 	void RefreshAllPresetUI();
 	void RefreshStatusCache();
 	EActiveTimerReturnType UpdateStatusCache(double CurrentTime, float DeltaTime);
+	void CheckForUpdates();
+	void OpenLatestRelease() const;
+	FText GetUpdateStatusText() const;
+	FText GetHeaderUpdateText() const;
+	FSlateColor GetUpdateStatusColor() const;
+	bool CanOpenLatestRelease() const;
 	void OnSearchTextChanged(const FText& Text);
 	void OnSearchTextCommitted(const FText& Text, ETextCommit::Type CommitType);
 	void SetSearchCategory(ESearchCategory Category);
@@ -235,6 +250,11 @@ private:
 	FText CachedVisualizationStatus;
 	FText CachedWorkflowStatus;
 	FText CachedDiagnosticsStatus;
+	EUpdateCheckState UpdateCheckState = EUpdateCheckState::NotChecked;
+	FString CurrentPluginVersion;
+	FString LatestReleaseVersion;
+	FString LatestReleaseUrl;
+	FText UpdateCheckError;
 	// Number of failing diagnostic checks, cached so the status chip and the nav
 	// badge can be read from per-frame attribute lambdas without re-running them.
 	int32 CachedDiagnosticsFailureCount = 0;

@@ -20,6 +20,7 @@ TA Debug View Tool is an editor-only UE5 plugin for technical artists. It provid
 - **Viewport Target**: Active, Perspective, and All target modes for applying debug views across editor viewports.
 - **Keyboard Shortcuts**: fixed shortcuts for opening the panel, resetting debug state, and executing the first five favorites.
 - **Help UI**: in-panel reference for shortcuts, quick access behavior, pages, and viewport targets.
+- **Update Check**: asynchronously compares the installed version with the latest public GitHub Release, shows a Header prompt when an update exists, and provides manual retry/open-release controls in Help. It never downloads or installs files automatically.
 - **Action Launcher**: search built-in views, effective workflows, curated commands, and every console command or CVar registered in the current UE session; press Enter to execute the first result.
 - **Preset Diagnostics**: validate the default/override workflow registry and clean stale Favorites / Recent references.
 

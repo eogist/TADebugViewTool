@@ -22,6 +22,7 @@ public class TADebugViewTool : ModuleRules
 			"ToolMenus",
 			"InputCore",
 			"Projects",
+			"HTTP",
 			"Json",
 			"JsonUtilities"
 		});
