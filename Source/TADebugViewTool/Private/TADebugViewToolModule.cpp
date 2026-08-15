@@ -10,6 +10,7 @@
 #include "TADebugViewQuickActionRuntime.h"
 #include "TADebugViewToolCommands.h"
 #include "TADebugViewToolConstants.h"
+#include "TADebugViewUpdateService.h"
 #include "TADebugViewWorkflowRegistry.h"
 #include "ToolMenus.h"
 #include "Widgets/Docking/SDockTab.h"
@@ -37,6 +38,7 @@ public:
 
 		TADebugViewTool::GetEffectiveWorkflowPresets();
 		TADebugViewTool::InitializeQuickAccessDefaults();
+		UpdateService.Initialize();
 		FTADebugViewToolCommands::Register();
 		BindCommands();
 
@@ -45,6 +47,7 @@ public:
 
 	virtual void ShutdownModule() override
 	{
+		UpdateService.Shutdown();
 		if (TSharedPtr<SDockTab> ExistingTab = FGlobalTabmanager::Get()->FindExistingLiveTab(TADebugViewToolTabName))
 		{
 			ExistingTab->RequestCloseTab();
@@ -135,6 +138,7 @@ private:
 			[
 				SAssignNew(DebugViewPanel, STADebugViewPanel)
 				.Executor(&Executor)
+				.UpdateService(&UpdateService)
 			];
 
 		ActivePanel = DebugViewPanel;
@@ -202,6 +206,7 @@ private:
 	}
 
 	TADebugViewTool::FTADebugViewExecutor Executor;
+	TADebugViewTool::FTADebugViewUpdateService UpdateService;
 	TSharedPtr<FUICommandList> PluginCommands;
 	TWeakPtr<STADebugViewPanel> ActivePanel;
 	bool bAllowManualPanelSpawn = false;

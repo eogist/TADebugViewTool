@@ -220,12 +220,14 @@ const TArray<FWorkflowPreset>& GetWorkflowPresets()
 		Result.Emplace(
 			TEXT("TADebugWorkflow_ResetDebug"),
 			LOCTEXT("Workflow_ResetDebug", "Reset Debug"),
-			LOCTEXT("Workflow_ResetDebug_Tooltip", "Return to Lit and clear common stat overlays."),
+			LOCTEXT("Workflow_ResetDebug_Tooltip", "Return to Lit and clear common debug overlays."),
 			TEXT("Icons.Refresh"),
 			TArray<FDebugViewAction>
 			{
 				FDebugViewAction::ViewMode(VMI_Lit),
 				FDebugViewAction::Command(TEXT("stat none")),
+				FDebugViewAction::Command(TEXT("showflag.bounds 0")),
+				FDebugViewAction::Command(TEXT("showflag.navigation 0")),
 				FDebugViewAction::Command(TEXT("r.Shadow.Virtual.Visualize.ShowCachedPagesOnly 0"))
 			},
 			TArray<FDebugViewAction>());

@@ -108,6 +108,8 @@
       "activateActions": [
         { "type": "ViewMode", "value": "VMI_Lit" },
         { "type": "Command", "value": "stat none" },
+        { "type": "Command", "value": "showflag.bounds 0" },
+        { "type": "Command", "value": "showflag.navigation 0" },
         { "type": "Command", "value": "r.Shadow.Virtual.Visualize.ShowCachedPagesOnly 0" }
       ],
       "deactivateActions": []

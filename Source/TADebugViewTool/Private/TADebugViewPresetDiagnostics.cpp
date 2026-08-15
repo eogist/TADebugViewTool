@@ -30,12 +30,15 @@ TArray<FPresetDiagnosticIssue> RunPresetDiagnostics()
 		return Issues;
 	}
 
+	const EPresetDiagnosticSeverity RegistrySeverity = AreWorkflowOverridesWriteProtected()
+		? EPresetDiagnosticSeverity::Error
+		: EPresetDiagnosticSeverity::Warning;
 	for (const FString& RegistryDiagnostic : GetWorkflowRegistryDiagnostics())
 	{
-		AddIssue(Issues, EPresetDiagnosticSeverity::Warning, TEXT("Workflow Registry"), RegistryDiagnostic);
+		AddIssue(Issues, RegistrySeverity, TEXT("Workflow Registry"), RegistryDiagnostic);
 	}
 
-	TSet<FString> SeenIds;
+	TSet<FName> SeenIds;
 	for (const FWorkflowPreset& WorkflowPreset : GetEffectiveWorkflowPresets())
 	{
 		const FString Id = WorkflowPreset.Id.ToString();
@@ -44,13 +47,13 @@ TArray<FPresetDiagnosticIssue> RunPresetDiagnostics()
 		{
 			AddIssue(Issues, EPresetDiagnosticSeverity::Error, Label, TEXT("Workflow has no stable Id."));
 		}
-		else if (SeenIds.Contains(Id))
+		else if (SeenIds.Contains(WorkflowPreset.Id))
 		{
 			AddIssue(Issues, EPresetDiagnosticSeverity::Error, Label, TEXT("Workflow Id is duplicated."));
 		}
 		else
 		{
-			SeenIds.Add(Id);
+			SeenIds.Add(WorkflowPreset.Id);
 		}
 		if (WorkflowPreset.Label.IsEmpty())
 		{
@@ -60,6 +63,25 @@ TArray<FPresetDiagnosticIssue> RunPresetDiagnostics()
 		{
 			AddIssue(Issues, EPresetDiagnosticSeverity::Error, Label, TEXT("Workflow has no activation actions."));
 		}
+
+		const auto ValidateRuntimeActions = [&Issues, &Label](const TArray<FDebugViewAction>& Actions, const TCHAR* CollectionName)
+		{
+			for (int32 ActionIndex = 0; ActionIndex < Actions.Num(); ++ActionIndex)
+			{
+				FTADebugViewCustomAction SavedAction;
+				if (!ConvertRuntimeActionToSavedAction(Actions[ActionIndex], SavedAction)
+					|| !IsWorkflowActionRuntimeValid(SavedAction))
+				{
+					AddIssue(
+						Issues,
+						EPresetDiagnosticSeverity::Error,
+						Label,
+						FString::Printf(TEXT("%s action %d has an unsupported value."), CollectionName, ActionIndex + 1));
+				}
+			}
+		};
+		ValidateRuntimeActions(WorkflowPreset.ActivateActions, TEXT("Activate"));
+		ValidateRuntimeActions(WorkflowPreset.DeactivateActions, TEXT("Restore"));
 	}
 
 	auto ValidateQuickActions = [&Issues](const TArray<FTADebugViewQuickAction>& Actions, const TCHAR* CollectionName)
@@ -103,9 +125,20 @@ TArray<FPresetDiagnosticCheck> RunPresetDiagnosticChecks()
 	}
 
 	const TArray<FWorkflowPreset>& Workflows = GetEffectiveWorkflowPresets();
+	const TArray<FString>& RegistryDiagnostics = GetWorkflowRegistryDiagnostics();
+	const bool bRegistryPassed = RegistryDiagnostics.IsEmpty();
+	AddCheck(
+		LOCTEXT("CheckWorkflowRegistry", "Workflow Registry"),
+		bRegistryPassed
+			? LOCTEXT("CheckWorkflowRegistryPassed", "Default and project workflow files loaded successfully.")
+			: FText::Format(
+				LOCTEXT("CheckWorkflowRegistryFailed", "{0} registry diagnostic(s) require attention."),
+				FText::AsNumber(RegistryDiagnostics.Num())),
+		bRegistryPassed,
+		AreWorkflowOverridesWriteProtected() ? EPresetDiagnosticSeverity::Error : EPresetDiagnosticSeverity::Warning);
 
 	// 1. Stable workflow Ids.
-	TSet<FString> SeenIds;
+	TSet<FName> SeenIds;
 	int32 DuplicateIdCount = 0;
 	int32 MissingIdCount = 0;
 	for (const FWorkflowPreset& WorkflowPreset : Workflows)
@@ -116,7 +149,7 @@ TArray<FPresetDiagnosticCheck> RunPresetDiagnosticChecks()
 			continue;
 		}
 		bool bAlreadySeen = false;
-		SeenIds.Add(WorkflowPreset.Id.ToString(), &bAlreadySeen);
+		SeenIds.Add(WorkflowPreset.Id, &bAlreadySeen);
 		if (bAlreadySeen)
 		{
 			++DuplicateIdCount;
@@ -141,6 +174,7 @@ TArray<FPresetDiagnosticCheck> RunPresetDiagnosticChecks()
 	int32 ActivateActionCount = 0;
 	int32 RestoreActionCount = 0;
 	int32 EmptyActivateWorkflowCount = 0;
+	int32 InvalidActionCount = 0;
 	for (const FWorkflowPreset& WorkflowPreset : Workflows)
 	{
 		ActivateActionCount += WorkflowPreset.ActivateActions.Num();
@@ -149,10 +183,24 @@ TArray<FPresetDiagnosticCheck> RunPresetDiagnosticChecks()
 		{
 			++EmptyActivateWorkflowCount;
 		}
+
+		const auto CountInvalidActions = [&InvalidActionCount](const TArray<FDebugViewAction>& Actions)
+		{
+			for (const FDebugViewAction& RuntimeAction : Actions)
+			{
+				FTADebugViewCustomAction SavedAction;
+				if (!ConvertRuntimeActionToSavedAction(RuntimeAction, SavedAction)
+					|| !IsWorkflowActionRuntimeValid(SavedAction))
+				{
+					++InvalidActionCount;
+				}
+			}
+		};
+		CountInvalidActions(WorkflowPreset.ActivateActions);
+		CountInvalidActions(WorkflowPreset.DeactivateActions);
 	}
 
-	const TArray<FString>& RegistryDiagnostics = GetWorkflowRegistryDiagnostics();
-	const bool bActionsPassed = EmptyActivateWorkflowCount == 0 && RegistryDiagnostics.IsEmpty();
+	const bool bActionsPassed = EmptyActivateWorkflowCount == 0 && InvalidActionCount == 0;
 	AddCheck(
 		LOCTEXT("CheckActionValues", "Action Values"),
 		bActionsPassed
@@ -160,16 +208,12 @@ TArray<FPresetDiagnosticCheck> RunPresetDiagnosticChecks()
 				LOCTEXT("CheckActionValuesPassed", "{0} activate and {1} restore action(s) are valid."),
 				FText::AsNumber(ActivateActionCount),
 				FText::AsNumber(RestoreActionCount))
-			: EmptyActivateWorkflowCount > 0
-				? FText::Format(
-					LOCTEXT("CheckActionValuesEmpty", "{0} workflow(s) have no activate action; {1} JSON problem(s) reported."),
-					FText::AsNumber(EmptyActivateWorkflowCount),
-					FText::AsNumber(RegistryDiagnostics.Num()))
-				: FText::Format(
-					LOCTEXT("CheckActionValuesJson", "{0} workflow JSON problem(s) reported."),
-					FText::AsNumber(RegistryDiagnostics.Num())),
+			: FText::Format(
+				LOCTEXT("CheckActionValuesFailed", "{0} workflow(s) have no activate action and {1} action value(s) are invalid."),
+				FText::AsNumber(EmptyActivateWorkflowCount),
+				FText::AsNumber(InvalidActionCount)),
 		bActionsPassed,
-		EmptyActivateWorkflowCount > 0 ? EPresetDiagnosticSeverity::Error : EPresetDiagnosticSeverity::Warning);
+		EPresetDiagnosticSeverity::Error);
 
 	// 3. Quick access references. Favorites is the only quick-access collection, so
 	// this stays in step with what RunPresetDiagnostics reports in the detail rows.

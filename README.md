@@ -7,11 +7,11 @@ TA Debug View Tool is an editor-only UE5 plugin for technical artists. It provid
 - Reduce the cost of repeatedly opening UE viewport debug menus.
 - Put Nanite, Lumen, Virtual Shadow Map, material, lighting, geometry, and performance checks in one panel.
 - Support repeatable TA workflows instead of one-off console command typing.
-- Remember the user's last panel state, favorites, recent actions, and viewport target.
+- Remember the user's last panel state, favorites, viewport target, and update-check preference.
 
 ## Main Features
 
-- **Workflows**: a unified workflow grid with Default, Modified, and User Created states for Material Cost, Nanite Audit, Lumen Check, VSM Cache, Collision QA, Performance HUD, Reset Debug, and custom checks. Custom workflows can choose their own persisted card icon.
+- **Workflows**: a unified workflow grid with Default, Modified, and Project Created states for Material Cost, Nanite Audit, Lumen Check, VSM Cache, Collision QA, Performance HUD, Reset Debug, and custom checks. Custom workflows can choose their own persisted card icon.
 - **Debug Views**: grouped viewport visualization presets for ViewMode, Nanite, Lumen, VSM, lighting, materials, and geometry.
 - **Commands**: a small curated set of VSM, geometry, and performance commands, grouped for quick access without duplicating the full UE console.
 - **Context Inspector**: inspect, run, edit, reset, or delete the selected workflow without leaving the main panel.
@@ -20,9 +20,9 @@ TA Debug View Tool is an editor-only UE5 plugin for technical artists. It provid
 - **Viewport Target**: Active, Perspective, and All target modes for applying debug views across editor viewports.
 - **Keyboard Shortcuts**: fixed shortcuts for opening the panel, resetting debug state, and executing the first five favorites.
 - **Help UI**: in-panel reference for shortcuts, quick access behavior, pages, and viewport targets.
-- **Update Check**: asynchronously compares the installed version with the latest public GitHub Release, shows a Header prompt when an update exists, and provides manual retry/open-release controls in Help. It never downloads or installs files automatically.
+- **Update Check**: optionally checks the latest public GitHub Release once per editor session, correctly compares stable and prerelease versions, and provides manual retry/open-release controls in Help. It never downloads or installs files automatically.
 - **Action Launcher**: search built-in views, effective workflows, curated commands, and every console command or CVar registered in the current UE session; press Enter to execute the first result.
-- **Preset Diagnostics**: validate the default/override workflow registry and clean stale Favorites / Recent references.
+- **Preset Diagnostics**: validate the default/override workflow registry, import legacy personal workflows into project-shared storage, and clean stale Favorites references.
 
 ## Default Shortcuts
 
@@ -59,31 +59,33 @@ Built-in workflow definitions are stored in:
 
 `Plugins/TADebugViewTool/Resources/DefaultWorkflows.json`
 
-Project workflow overrides and user-created workflows are stored in:
+Project workflow overrides and project-created workflows are stored in:
 
 `Project/Config/TADebugViewTool/WorkflowOverrides.json`
 
-The runtime registry merges both files by stable workflow Id:
+This is team-visible project data and may be committed to source control. The runtime registry merges both files by stable workflow Id:
 
 - A default workflow with no override is reported as **Default**.
 - A default workflow with a matching override is reported as **Modified**.
-- An override with a new Id is reported as **User Created**.
+- An override with a new Id is reported as **Project Created**.
 - Resetting a modified default deletes only its override and exposes the plugin default again.
-- Deleting a user-created workflow removes only that override entry.
+- Deleting a project-created workflow removes only that override entry.
 
-Override saves use a validated temporary file and preserve the previous file as `.bak` before replacement. Existing legacy workflows from editor per-project user settings are migrated once into the override file.
+Override loading is all-or-nothing. If the file is unreadable or any entry is invalid, the plugin uses its defaults and write-protects the override file instead of applying or overwriting a valid prefix. Repair the JSON, restore `WorkflowOverrides.json.bak`, or revert the file from source control before saving again.
+
+Saves use a uniquely named validated temporary file, require a successful `.bak` backup, and compare the current file fingerprint before replacement so another editor or external edit is not overwritten. Legacy personal workflows are shown in Diagnostics and are imported only after explicit confirmation into project-shared storage.
 
 Personal panel preferences remain in `UTADebugViewCustomPresetSettings` as editor per-project user settings.
 
 The plugin remembers:
 
 - Favorite actions
-- Recent actions, capped at five
 - Last viewport target
 - Last panel page
 - Last Debug Views category
 - Whether default quick access favorites have already been initialized
-- Whether legacy workflow overrides have already been migrated
+- Whether automatic update checks are enabled
+- Whether legacy workflows have been explicitly imported into project storage
 
 ## Code Structure
 
@@ -94,7 +96,8 @@ The plugin remembers:
 - `TADebugViewPresetRegistry.*`: built-in debug view definitions and compiled workflow fallback data.
 - `TADebugViewWorkflowRegistry.*`: loads, validates, merges, migrates, saves, resets, and deletes workflow overrides.
 - `TADebugViewCustomPresetSettings.*`: personal panel state, legacy migration data, and quick access references.
-- `TADebugViewQuickActionRuntime.*`: shared runtime helper for resolving quick actions, executing favorites/workflows/debug presets/runtime console commands, writing Recent, and cleaning stale references.
+- `TADebugViewQuickActionRuntime.*`: shared runtime helper for resolving and executing favorites, workflows, debug presets, and runtime console commands, and cleaning stale references.
+- `TADebugViewUpdateService.*`: module-lifetime GitHub release check, SemVer comparison, trusted release links, and per-session request caching.
 - `TADebugViewPresetDiagnostics.*`: effective-registry validation and stale-reference reporting.
 
 ## Current Scope
@@ -104,4 +107,4 @@ This plugin currently focuses on editor workflow speed. It does not add runtime 
 ## Suggested Next Phases
 
 - Optional capture workflows for turning on a debug state and taking viewport screenshots.
-- Optional automation tests for override migration, JSON round trips, diagnostics, and quick-action resolution.
+- Extend the existing Automation Tests with viewport-driven Reset and multi-editor conflict smoke coverage.

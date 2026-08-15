@@ -115,8 +115,11 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "TA Debug Views")
 	bool bHasInitializedQuickAccessDefaults = false;
 
-	// Legacy EditorPerProjectUserSettings workflows are migrated once into
-	// Project/Config/TADebugViewTool/WorkflowOverrides.json.
+	UPROPERTY(config, EditAnywhere, Category = "TA Debug Views")
+	bool bAutomaticallyCheckForUpdates = true;
+
+	// Legacy EditorPerProjectUserSettings workflows are imported explicitly from
+	// Diagnostics into Project/Config/TADebugViewTool/WorkflowOverrides.json.
 	UPROPERTY(config)
 	bool bHasMigratedWorkflowOverridesV2 = false;
 

@@ -71,7 +71,17 @@ bool FTADebugViewQuickAction::IsValid() const
 
 bool FTADebugViewQuickAction::Matches(const FTADebugViewQuickAction& Other) const
 {
-	return ActionType == Other.ActionType && Id == Other.Id;
+	if (ActionType != Other.ActionType)
+	{
+		return false;
+	}
+
+	if (ActionType == ETADebugViewQuickActionType::ConsoleCommand)
+	{
+		return Id.TrimStartAndEnd().Equals(Other.Id.TrimStartAndEnd(), ESearchCase::IgnoreCase);
+	}
+
+	return FName(*Id.TrimStartAndEnd()) == FName(*Other.Id.TrimStartAndEnd());
 }
 
 FTADebugViewCustomAction::FTADebugViewCustomAction()
@@ -94,6 +104,7 @@ FTADebugViewCustomWorkflowPreset::FTADebugViewCustomWorkflowPreset()
 
 void FTADebugViewCustomWorkflowPreset::EnsureId()
 {
+	Id.TrimStartAndEndInline();
 	if (Id.IsEmpty())
 	{
 		Id = BuildStableCustomPresetId(*this);
@@ -102,23 +113,28 @@ void FTADebugViewCustomWorkflowPreset::EnsureId()
 
 void FTADebugViewCustomWorkflowPreset::MigrateLegacyCommands()
 {
-	if (!ActivateCommands.TrimStartAndEnd().IsEmpty())
+	const auto AppendLegacyCommandIfMissing = [](FString& LegacyCommands, TArray<FTADebugViewCustomAction>& Actions)
 	{
-		if (ActivateActions.IsEmpty())
+		const FString NormalizedCommands = LegacyCommands.TrimStartAndEnd();
+		if (NormalizedCommands.IsEmpty())
 		{
-			ActivateActions.Add(FTADebugViewCustomAction(ETADebugViewCustomActionType::Command, ActivateCommands));
+			return;
 		}
-		ActivateCommands.Reset();
-	}
 
-	if (!DeactivateCommands.TrimStartAndEnd().IsEmpty())
-	{
-		if (DeactivateActions.IsEmpty())
+		const bool bAlreadyRepresented = Actions.ContainsByPredicate([&NormalizedCommands](const FTADebugViewCustomAction& Action)
 		{
-			DeactivateActions.Add(FTADebugViewCustomAction(ETADebugViewCustomActionType::Command, DeactivateCommands));
+			return Action.ActionType == ETADebugViewCustomActionType::Command
+				&& Action.Value.TrimStartAndEnd().Equals(NormalizedCommands, ESearchCase::IgnoreCase);
+		});
+		if (!bAlreadyRepresented)
+		{
+			Actions.Add(FTADebugViewCustomAction(ETADebugViewCustomActionType::Command, NormalizedCommands));
 		}
-		DeactivateCommands.Reset();
-	}
+		LegacyCommands.Reset();
+	};
+
+	AppendLegacyCommandIfMissing(ActivateCommands, ActivateActions);
+	AppendLegacyCommandIfMissing(DeactivateCommands, DeactivateActions);
 }
 
 UTADebugViewCustomPresetSettings* UTADebugViewCustomPresetSettings::GetMutable()
@@ -128,32 +144,15 @@ UTADebugViewCustomPresetSettings* UTADebugViewCustomPresetSettings::GetMutable()
 
 void UTADebugViewCustomPresetSettings::SaveUserSettings()
 {
-	// CustomWorkflowPresets is legacy storage: nothing writes new entries to it any more,
-	// since workflow edits go to Project/Config/TADebugViewTool/WorkflowOverrides.json.
-	// It is still normalized here so the one-time migration reads stable, unique Ids.
-	// Order is preserved, so an Id collision only ever suffixes the later duplicate and
-	// existing Favorites references stay valid.
-	TSet<FString> UsedPresetIds;
+	// CustomWorkflowPresets is read-only legacy storage. Normal preference saves must
+	// not consume or clear its command fields: explicit project import performs that
+	// conversion on a copy and marks completion only after the project file is saved.
 	for (FTADebugViewCustomWorkflowPreset& Preset : CustomWorkflowPresets)
 	{
 		Preset.EnsureId();
-		Preset.MigrateLegacyCommands();
-
-		const FString BaseId = Preset.Id;
-		int32 Suffix = 2;
-		while (UsedPresetIds.Contains(Preset.Id))
-		{
-			Preset.Id = FString::Printf(TEXT("%s_%d"), *BaseId, Suffix++);
-		}
-
-		UsedPresetIds.Add(Preset.Id);
 	}
 
-	// No workflow cache invalidation here. This saves favorites and panel state, and
-	// the legacy CustomWorkflowPresets array is now only read by the one-time
-	// migration. Workflow edits go through SaveWorkflowOverride / ResetWorkflowToDefault
-	// / DeleteUserWorkflow, which invalidate the registry themselves. Invalidating
-	// here would also re-dirty the cache mid-rebuild, since the migration calls back
-	// into this function from inside RebuildWorkflowCache.
+	// Workflow edits and explicit legacy import invalidate the registry themselves;
+	// ordinary preference saves only persist per-user state.
 	SaveConfig();
 }

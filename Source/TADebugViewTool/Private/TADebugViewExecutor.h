@@ -21,6 +21,7 @@ public:
 	void ExecutePreset(FDebugViewPreset Preset) const;
 	void ExecutePresetFromPanel(FDebugViewPreset Preset);
 	void ExecuteWorkflowPreset(const FWorkflowPreset& WorkflowPreset);
+	void ResetDebugState();
 	void SynchronizeFromCurrentViewportState();
 
 	void SetViewportTarget(EDebugViewportTarget InViewportTarget);
