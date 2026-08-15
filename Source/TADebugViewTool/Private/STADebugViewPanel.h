@@ -17,6 +17,7 @@ namespace TADebugViewTool
 {
 enum class EDebugViewportTarget : uint8;
 class FTADebugViewExecutor;
+class FTADebugViewUpdateService;
 }
 
 class STADebugViewPanel final : public SCompoundWidget
@@ -26,6 +27,7 @@ public:
 	{
 	}
 		SLATE_ARGUMENT(TADebugViewTool::FTADebugViewExecutor*, Executor)
+		SLATE_ARGUMENT(TADebugViewTool::FTADebugViewUpdateService*, UpdateService)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
@@ -77,15 +79,6 @@ private:
 		Workflows,
 		DebugViews,
 		Commands
-	};
-
-	enum class EUpdateCheckState : uint8
-	{
-		NotChecked,
-		Checking,
-		UpToDate,
-		UpdateAvailable,
-		Failed
 	};
 
 	TSharedRef<SWidget> MakeNavigationBar();
@@ -156,7 +149,7 @@ private:
 	void RefreshAllPresetUI();
 	void RefreshStatusCache();
 	EActiveTimerReturnType UpdateStatusCache(double CurrentTime, float DeltaTime);
-	void CheckForUpdates();
+	void CheckForUpdates(bool bForce = false);
 	void OpenLatestRelease() const;
 	FText GetUpdateStatusText() const;
 	FText GetHeaderUpdateText() const;
@@ -200,6 +193,7 @@ private:
 	float GetContextInspectorWidth() const;
 
 	TADebugViewTool::FTADebugViewExecutor* Executor = nullptr;
+	TADebugViewTool::FTADebugViewUpdateService* UpdateService = nullptr;
 	TSharedPtr<SHorizontalBox> QuickAccessBox;
 	TSharedPtr<SHorizontalBox> QuickAccessPageDotsBox;
 	TSharedPtr<SComboButton> QuickAccessFavoritesButton;
@@ -250,11 +244,6 @@ private:
 	FText CachedVisualizationStatus;
 	FText CachedWorkflowStatus;
 	FText CachedDiagnosticsStatus;
-	EUpdateCheckState UpdateCheckState = EUpdateCheckState::NotChecked;
-	FString CurrentPluginVersion;
-	FString LatestReleaseVersion;
-	FString LatestReleaseUrl;
-	FText UpdateCheckError;
 	// Number of failing diagnostic checks, cached so the status chip and the nav
 	// badge can be read from per-frame attribute lambdas without re-running them.
 	int32 CachedDiagnosticsFailureCount = 0;

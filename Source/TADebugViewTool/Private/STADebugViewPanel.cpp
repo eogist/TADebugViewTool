@@ -1,17 +1,10 @@
 #include "STADebugViewPanel.h"
 
-#include "Dom/JsonObject.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "HAL/IConsoleManager.h"
-#include "HAL/PlatformProcess.h"
-#include "HttpModule.h"
-#include "Interfaces/IHttpRequest.h"
-#include "Interfaces/IHttpResponse.h"
-#include "Interfaces/IPluginManager.h"
 #include "Layout/WidgetPath.h"
 #include "Misc/MessageDialog.h"
-#include "Serialization/JsonSerializer.h"
 #include "Styling/AppStyle.h"
 #include "Styling/SlateTypes.h"
 #include "TADebugViewCustomPresetSettings.h"
@@ -20,9 +13,11 @@
 #include "TADebugViewPresetRegistry.h"
 #include "TADebugViewQuickActionRuntime.h"
 #include "TADebugViewToolConstants.h"
+#include "TADebugViewUpdateService.h"
 #include "TADebugViewWorkflowRegistry.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
@@ -58,85 +53,6 @@ constexpr float StandardFieldGap = 8.0f;
 constexpr float StandardSectionGap = 12.0f;
 constexpr float EditorControlHeight = 36.0f;
 constexpr float EditorActionRowHeight = 44.0f;
-constexpr float UpdateCheckTimeoutSeconds = 10.0f;
-constexpr TCHAR LatestReleaseApiUrl[] = TEXT("https://api.github.com/repos/eogist/TADebugViewTool/releases/latest");
-
-TOptional<TArray<int32>> ParseSemanticVersion(const FString& Version)
-{
-	FString CoreVersion = Version.TrimStartAndEnd();
-	if (CoreVersion.StartsWith(TEXT("v"), ESearchCase::IgnoreCase))
-	{
-		CoreVersion.RightChopInline(1, EAllowShrinking::No);
-	}
-
-	int32 SuffixIndex = INDEX_NONE;
-	for (int32 Index = 0; Index < CoreVersion.Len(); ++Index)
-	{
-		if (CoreVersion[Index] == TEXT('-') || CoreVersion[Index] == TEXT('+'))
-		{
-			SuffixIndex = Index;
-			break;
-		}
-	}
-	if (SuffixIndex != INDEX_NONE)
-	{
-		CoreVersion.LeftInline(SuffixIndex, EAllowShrinking::No);
-	}
-
-	TArray<FString> Parts;
-	CoreVersion.ParseIntoArray(Parts, TEXT("."), false);
-	if (Parts.IsEmpty())
-	{
-		return {};
-	}
-
-	TArray<int32> Components;
-	Components.Reserve(Parts.Num());
-	for (const FString& Part : Parts)
-	{
-		if (Part.IsEmpty())
-		{
-			return {};
-		}
-
-		for (const TCHAR Character : Part)
-		{
-			if (!FChar::IsDigit(Character))
-			{
-				return {};
-			}
-		}
-
-		Components.Add(FCString::Atoi(*Part));
-	}
-
-	return Components;
-}
-
-TOptional<int32> CompareSemanticVersions(const FString& LeftVersion, const FString& RightVersion)
-{
-	const TOptional<TArray<int32>> LeftComponents = ParseSemanticVersion(LeftVersion);
-	const TOptional<TArray<int32>> RightComponents = ParseSemanticVersion(RightVersion);
-	if (!LeftComponents.IsSet() || !RightComponents.IsSet())
-	{
-		return {};
-	}
-
-	const TArray<int32>& LeftValues = LeftComponents.GetValue();
-	const TArray<int32>& RightValues = RightComponents.GetValue();
-	const int32 ComponentCount = FMath::Max(LeftValues.Num(), RightValues.Num());
-	for (int32 Index = 0; Index < ComponentCount; ++Index)
-	{
-		const int32 Left = LeftValues.IsValidIndex(Index) ? LeftValues[Index] : 0;
-		const int32 Right = RightValues.IsValidIndex(Index) ? RightValues[Index] : 0;
-		if (Left != Right)
-		{
-			return Left < Right ? -1 : 1;
-		}
-	}
-
-	return 0;
-}
 
 class SQuickAccessPager final : public SCompoundWidget
 {
@@ -792,10 +708,7 @@ const FSlateBrush* GetWorkflowSourceBadgeBrush(TADebugViewTool::EWorkflowPresetS
 void STADebugViewPanel::Construct(const FArguments& InArgs)
 {
 	Executor = InArgs._Executor;
-	if (const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("TADebugViewTool")))
-	{
-		CurrentPluginVersion = Plugin->GetDescriptor().VersionName;
-	}
+	UpdateService = InArgs._UpdateService;
 	TADebugViewTool::GetEffectiveWorkflowPresets();
 	TADebugViewTool::InitializeQuickAccessDefaults();
 	LoadUserPreferences();
@@ -1222,7 +1135,9 @@ TSharedRef<SWidget> STADebugViewPanel::MakeHeaderBar()
 			.HeightOverride(StandardControlHeight)
 			.Visibility_Lambda([this]()
 			{
-				return UpdateCheckState == EUpdateCheckState::UpdateAvailable && LayoutMode != EPanelLayoutMode::Compact
+				return UpdateService
+					&& UpdateService->GetState() == TADebugViewTool::EUpdateCheckState::UpdateAvailable
+					&& LayoutMode != EPanelLayoutMode::Compact
 					? EVisibility::Visible
 					: EVisibility::Collapsed;
 			})
@@ -3090,7 +3005,9 @@ TSharedRef<SWidget> STADebugViewPanel::MakeHelpPage()
 						{
 							return FText::Format(
 								LOCTEXT("HelpInstalledVersion", "Installed version: v{0}"),
-								FText::FromString(CurrentPluginVersion.IsEmpty() ? TEXT("Unknown") : CurrentPluginVersion));
+								FText::FromString(UpdateService && !UpdateService->GetCurrentVersion().IsEmpty()
+									? UpdateService->GetCurrentVersion()
+									: TEXT("Unknown")));
 						})
 						.ColorAndOpacity(FSlateColor::UseSubduedForeground()),
 					SNew(STextBlock)
@@ -3101,6 +3018,30 @@ TSharedRef<SWidget> STADebugViewPanel::MakeHelpPage()
 						.Text(LOCTEXT("HelpUpdatePrivacy", "Checks the latest public GitHub Release asynchronously. No package is downloaded or installed automatically."))
 						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 						.AutoWrapText(true),
+					SNew(SCheckBox)
+						.IsChecked_Lambda([]()
+						{
+							const UTADebugViewCustomPresetSettings* Settings = GetDefault<UTADebugViewCustomPresetSettings>();
+							return Settings && Settings->bAutomaticallyCheckForUpdates
+								? ECheckBoxState::Checked
+								: ECheckBoxState::Unchecked;
+						})
+						.OnCheckStateChanged_Lambda([this](ECheckBoxState NewState)
+						{
+							if (UTADebugViewCustomPresetSettings* Settings = UTADebugViewCustomPresetSettings::GetMutable())
+							{
+								Settings->bAutomaticallyCheckForUpdates = NewState == ECheckBoxState::Checked;
+								Settings->SaveUserSettings();
+								if (Settings->bAutomaticallyCheckForUpdates)
+								{
+									CheckForUpdates(false);
+								}
+							}
+						})
+						[
+							SNew(STextBlock)
+								.Text(LOCTEXT("HelpAutomaticUpdateCheck", "Automatically check once per editor session"))
+						],
 					SNew(SHorizontalBox)
 						+ SHorizontalBox::Slot()
 						.AutoWidth()
@@ -3110,11 +3051,12 @@ TSharedRef<SWidget> STADebugViewPanel::MakeHelpPage()
 								.ContentPadding(FMargin(10.0f, 4.0f))
 								.IsEnabled_Lambda([this]()
 								{
-									return UpdateCheckState != EUpdateCheckState::Checking;
+									return UpdateService
+										&& UpdateService->GetState() != TADebugViewTool::EUpdateCheckState::Checking;
 								})
 								.OnClicked_Lambda([this]()
 								{
-									CheckForUpdates();
+									CheckForUpdates(true);
 									return FReply::Handled();
 								})
 						]
@@ -3177,6 +3119,42 @@ TSharedRef<SWidget> STADebugViewPanel::MakeDiagnosticsPage()
 			[
 				SNew(SBox)
 				.HeightOverride(StandardControlHeight)
+				.Visibility_Lambda([]()
+				{
+					return TADebugViewTool::HasPendingLegacyWorkflowImport()
+						? EVisibility::Visible
+						: EVisibility::Collapsed;
+				})
+				[
+					SNew(SButton)
+					.Text(LOCTEXT("ImportLegacyWorkflowsButton", "Import Legacy Workflows"))
+					.ContentPadding(FMargin(10.0f, 4.0f))
+					.OnClicked_Lambda([this]()
+					{
+						const EAppReturnType::Type Confirmation = FMessageDialog::Open(
+							EAppMsgType::YesNo,
+							LOCTEXT(
+								"ImportLegacyWorkflowsConfirmation",
+								"Import legacy personal workflows into Project/Config/TADebugViewTool/WorkflowOverrides.json?\n\nThis is project-shared data and may be committed to source control."));
+						if (Confirmation == EAppReturnType::Yes)
+						{
+							FString ImportError;
+							if (!TADebugViewTool::ImportLegacyWorkflows(ImportError))
+							{
+								FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(ImportError));
+							}
+							RefreshAllPresetUI();
+						}
+						return FReply::Handled();
+					})
+				]
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(SBox)
+				.HeightOverride(StandardControlHeight)
 				[
 					SNew(SButton)
 					.Text(LOCTEXT("CleanStaleActionsButton", "Clean Stale References"))
@@ -3200,7 +3178,8 @@ TSharedRef<SWidget> STADebugViewPanel::MakeDiagnosticsPage()
 					.ContentPadding(FMargin(10.0f, 4.0f))
 				.OnClicked_Lambda([this]()
 				{
-					RebuildDiagnostics();
+					TADebugViewTool::InvalidateEffectiveWorkflowPresetCache();
+					RefreshAllPresetUI();
 					return FReply::Handled();
 				})
 				]
@@ -4906,133 +4885,55 @@ void STADebugViewPanel::RefreshStatusCache()
 	// or overrides change, so it is refreshed from RebuildDiagnostics instead.
 }
 
-void STADebugViewPanel::CheckForUpdates()
+void STADebugViewPanel::CheckForUpdates(bool bForce)
 {
-	if (UpdateCheckState == EUpdateCheckState::Checking)
+	if (!UpdateService)
 	{
 		return;
 	}
-
-	LatestReleaseVersion.Reset();
-	LatestReleaseUrl.Reset();
-	UpdateCheckError = FText::GetEmpty();
-	UpdateCheckState = EUpdateCheckState::Checking;
-
-	if (CurrentPluginVersion.IsEmpty())
+	if (!bForce)
 	{
-		UpdateCheckState = EUpdateCheckState::Failed;
-		UpdateCheckError = LOCTEXT("UpdateCheckMissingLocalVersion", "Could not read the installed plugin version.");
-		return;
-	}
-
-	const FHttpRequestPtr Request = FHttpModule::Get().CreateRequest();
-	Request->SetURL(LatestReleaseApiUrl);
-	Request->SetVerb(TEXT("GET"));
-	Request->SetHeader(TEXT("Accept"), TEXT("application/vnd.github+json"));
-	Request->SetHeader(TEXT("User-Agent"), TEXT("TADebugViewTool-UpdateCheck"));
-	Request->SetHeader(TEXT("X-GitHub-Api-Version"), TEXT("2022-11-28"));
-	Request->SetTimeout(UpdateCheckTimeoutSeconds);
-
-	const TWeakPtr<STADebugViewPanel> WeakPanel = SharedThis(this);
-	Request->OnProcessRequestComplete().BindLambda(
-		[WeakPanel](FHttpRequestPtr, FHttpResponsePtr Response, bool bSucceeded)
+		const UTADebugViewCustomPresetSettings* Settings = GetDefault<UTADebugViewCustomPresetSettings>();
+		if (!Settings || !Settings->bAutomaticallyCheckForUpdates)
 		{
-			const TSharedPtr<STADebugViewPanel> Panel = WeakPanel.Pin();
-			if (!Panel.IsValid())
-			{
-				return;
-			}
-
-			if (!bSucceeded || !Response.IsValid())
-			{
-				Panel->UpdateCheckState = EUpdateCheckState::Failed;
-				Panel->UpdateCheckError = LOCTEXT("UpdateCheckNetworkError", "Could not reach GitHub. Check the network connection and try again.");
-				return;
-			}
-
-			if (Response->GetResponseCode() != 200)
-			{
-				Panel->UpdateCheckState = EUpdateCheckState::Failed;
-				Panel->UpdateCheckError = FText::Format(
-					LOCTEXT("UpdateCheckHttpError", "GitHub returned HTTP {0}. Try again later."),
-					FText::AsNumber(Response->GetResponseCode()));
-				return;
-			}
-
-			TSharedPtr<FJsonObject> ReleaseObject;
-			const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
-			if (!FJsonSerializer::Deserialize(Reader, ReleaseObject) || !ReleaseObject.IsValid())
-			{
-				Panel->UpdateCheckState = EUpdateCheckState::Failed;
-				Panel->UpdateCheckError = LOCTEXT("UpdateCheckInvalidResponse", "GitHub returned an unreadable release response.");
-				return;
-			}
-
-			FString ReleaseTag;
-			FString ReleaseUrl;
-			if (!ReleaseObject->TryGetStringField(TEXT("tag_name"), ReleaseTag)
-				|| !ReleaseObject->TryGetStringField(TEXT("html_url"), ReleaseUrl)
-				|| ReleaseTag.IsEmpty()
-				|| ReleaseUrl.IsEmpty())
-			{
-				Panel->UpdateCheckState = EUpdateCheckState::Failed;
-				Panel->UpdateCheckError = LOCTEXT("UpdateCheckMissingFields", "The latest GitHub Release is missing version information.");
-				return;
-			}
-
-			const TOptional<int32> Comparison = CompareSemanticVersions(Panel->CurrentPluginVersion, ReleaseTag);
-			if (!Comparison.IsSet())
-			{
-				Panel->UpdateCheckState = EUpdateCheckState::Failed;
-				Panel->UpdateCheckError = FText::Format(
-					LOCTEXT("UpdateCheckInvalidVersion", "Could not compare installed version {0} with release {1}."),
-					FText::FromString(Panel->CurrentPluginVersion),
-					FText::FromString(ReleaseTag));
-				return;
-			}
-
-			Panel->LatestReleaseVersion = ReleaseTag;
-			Panel->LatestReleaseVersion.RemoveFromStart(TEXT("v"), ESearchCase::IgnoreCase);
-			Panel->LatestReleaseUrl = ReleaseUrl;
-			Panel->UpdateCheckState = Comparison.GetValue() < 0
-				? EUpdateCheckState::UpdateAvailable
-				: EUpdateCheckState::UpToDate;
-		});
-
-	if (!Request->ProcessRequest())
-	{
-		UpdateCheckState = EUpdateCheckState::Failed;
-		UpdateCheckError = LOCTEXT("UpdateCheckStartError", "The update request could not be started.");
+			return;
+		}
 	}
+	UpdateService->CheckForUpdates(bForce);
 }
 
 void STADebugViewPanel::OpenLatestRelease() const
 {
-	if (CanOpenLatestRelease())
+	if (UpdateService)
 	{
-		FPlatformProcess::LaunchURL(*LatestReleaseUrl, nullptr, nullptr);
+		UpdateService->OpenLatestRelease();
 	}
 }
 
 FText STADebugViewPanel::GetUpdateStatusText() const
 {
-	switch (UpdateCheckState)
+	if (!UpdateService)
 	{
-	case EUpdateCheckState::Checking:
+		return LOCTEXT("UpdateStatusUnavailable", "Update service is unavailable.");
+	}
+
+	switch (UpdateService->GetState())
+	{
+	case TADebugViewTool::EUpdateCheckState::Checking:
 		return LOCTEXT("UpdateStatusChecking", "Checking GitHub Releases...");
-	case EUpdateCheckState::UpToDate:
+	case TADebugViewTool::EUpdateCheckState::UpToDate:
 		return FText::Format(
 			LOCTEXT("UpdateStatusCurrent", "v{0} is up to date."),
-			FText::FromString(CurrentPluginVersion));
-	case EUpdateCheckState::UpdateAvailable:
+			FText::FromString(UpdateService->GetCurrentVersion()));
+	case TADebugViewTool::EUpdateCheckState::UpdateAvailable:
 		return FText::Format(
 			LOCTEXT("UpdateStatusAvailable", "v{0} is available (installed: v{1})."),
-			FText::FromString(LatestReleaseVersion),
-			FText::FromString(CurrentPluginVersion));
-	case EUpdateCheckState::Failed:
-		return UpdateCheckError.IsEmpty()
+			FText::FromString(UpdateService->GetLatestVersion()),
+			FText::FromString(UpdateService->GetCurrentVersion()));
+	case TADebugViewTool::EUpdateCheckState::Failed:
+		return UpdateService->GetError().IsEmpty()
 			? LOCTEXT("UpdateStatusFailed", "Could not check for updates.")
-			: UpdateCheckError;
+			: UpdateService->GetError();
 	default:
 		return LOCTEXT("UpdateStatusNotChecked", "Updates have not been checked yet.");
 	}
@@ -5042,18 +4943,23 @@ FText STADebugViewPanel::GetHeaderUpdateText() const
 {
 	return FText::Format(
 		LOCTEXT("HeaderUpdateButton", "Update v{0}"),
-		FText::FromString(LatestReleaseVersion));
+		FText::FromString(UpdateService ? UpdateService->GetLatestVersion() : FString()));
 }
 
 FSlateColor STADebugViewPanel::GetUpdateStatusColor() const
 {
-	switch (UpdateCheckState)
+	if (!UpdateService)
 	{
-	case EUpdateCheckState::UpdateAvailable:
+		return FSlateColor::UseSubduedForeground();
+	}
+
+	switch (UpdateService->GetState())
+	{
+	case TADebugViewTool::EUpdateCheckState::UpdateAvailable:
 		return FSlateColor(FLinearColor::FromSRGBColor(FColor(83, 170, 255)));
-	case EUpdateCheckState::UpToDate:
+	case TADebugViewTool::EUpdateCheckState::UpToDate:
 		return FSlateColor(FLinearColor::FromSRGBColor(FColor(53, 175, 109)));
-	case EUpdateCheckState::Failed:
+	case TADebugViewTool::EUpdateCheckState::Failed:
 		return FSlateColor(FLinearColor::FromSRGBColor(FColor(224, 92, 92)));
 	default:
 		return FSlateColor::UseSubduedForeground();
@@ -5062,7 +4968,7 @@ FSlateColor STADebugViewPanel::GetUpdateStatusColor() const
 
 bool STADebugViewPanel::CanOpenLatestRelease() const
 {
-	return !LatestReleaseUrl.IsEmpty();
+	return UpdateService && UpdateService->CanOpenLatestRelease();
 }
 
 EActiveTimerReturnType STADebugViewPanel::UpdateStatusCache(double CurrentTime, float DeltaTime)

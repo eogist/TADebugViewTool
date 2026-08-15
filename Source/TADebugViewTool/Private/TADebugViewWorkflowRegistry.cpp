@@ -5,6 +5,7 @@
 #include "Interfaces/IPluginManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/SecureHash.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
@@ -25,8 +26,18 @@ constexpr TCHAR OverrideRelativePath[] = TEXT("TADebugViewTool/WorkflowOverrides
 
 TArray<FWorkflowPreset> CachedDefaultWorkflows;
 TArray<FWorkflowPreset> CachedEffectiveWorkflows;
+enum class EWorkflowFileLoadStatus : uint8
+{
+	Missing,
+	Valid,
+	Invalid
+};
+
 TArray<FWorkflowPreset> CachedOverrideWorkflows;
 TArray<FString> CachedDiagnostics;
+EWorkflowFileLoadStatus CachedOverrideLoadStatus = EWorkflowFileLoadStatus::Missing;
+FString CachedOverrideFileHash;
+bool bCachedOverrideFileExists = false;
 bool bWorkflowCacheDirty = true;
 
 FString GetDefaultWorkflowFilePath()
@@ -40,6 +51,60 @@ FString GetDefaultWorkflowFilePath()
 FString GetOverrideWorkflowFilePath()
 {
 	return FPaths::Combine(FPaths::ProjectConfigDir(), OverrideRelativePath);
+}
+
+FString HashWorkflowFileText(const FString& Text)
+{
+	FTCHARToUTF8 Utf8Text(*Text);
+	FMD5 Hasher;
+	Hasher.Update(reinterpret_cast<const uint8*>(Utf8Text.Get()), Utf8Text.Length());
+	uint8 Digest[16];
+	Hasher.Final(Digest);
+	return BytesToHex(Digest, UE_ARRAY_COUNT(Digest));
+}
+
+bool ReadWorkflowFileSnapshot(const FString& FilePath, bool& bOutExists, FString& OutHash, FString& OutError)
+{
+	bOutExists = IFileManager::Get().FileExists(*FilePath);
+	OutHash.Reset();
+	if (!bOutExists)
+	{
+		return true;
+	}
+
+	FString FileText;
+	if (!FFileHelper::LoadFileToString(FileText, *FilePath))
+	{
+		OutError = FString::Printf(TEXT("Could not read workflow file for conflict detection: %s"), *FilePath);
+		return false;
+	}
+	OutHash = HashWorkflowFileText(FileText);
+	return true;
+}
+
+bool EnsureOverrideSnapshotIsWritable(FString& OutError)
+{
+	if (CachedOverrideLoadStatus == EWorkflowFileLoadStatus::Invalid)
+	{
+		OutError = TEXT("WorkflowOverrides.json is invalid or unreadable. Repair it, restore its .bak file, or revert it from source control before saving.");
+		return false;
+	}
+
+	bool bCurrentExists = false;
+	FString CurrentHash;
+	if (!ReadWorkflowFileSnapshot(GetOverrideWorkflowFilePath(), bCurrentExists, CurrentHash, OutError))
+	{
+		bWorkflowCacheDirty = true;
+		return false;
+	}
+	if (bCurrentExists != bCachedOverrideFileExists
+		|| (bCurrentExists && CurrentHash != CachedOverrideFileHash))
+	{
+		OutError = TEXT("WorkflowOverrides.json changed outside this editor. The registry has been reloaded; review the new contents and try again.");
+		bWorkflowCacheDirty = true;
+		return false;
+	}
+	return true;
 }
 
 TOptional<EViewModeIndex> GetViewModeFromConfigValue(const FString& Value)
@@ -70,6 +135,53 @@ TOptional<EViewModeIndex> GetViewModeFromConfigValue(const FString& Value)
 		return *ViewMode;
 	}
 	return TOptional<EViewModeIndex>();
+}
+
+bool IsVisualizationModeSupported(ETADebugViewCustomActionType ActionType, FName VisualizationMode)
+{
+	EPresetActionType RuntimeType;
+	switch (ActionType)
+	{
+	case ETADebugViewCustomActionType::NaniteVisualization:
+		RuntimeType = EPresetActionType::NaniteVisualization;
+		break;
+	case ETADebugViewCustomActionType::LumenVisualization:
+		RuntimeType = EPresetActionType::LumenVisualization;
+		break;
+	case ETADebugViewCustomActionType::VirtualShadowMapVisualization:
+		RuntimeType = EPresetActionType::VirtualShadowMapVisualization;
+		break;
+	default:
+		return false;
+	}
+
+	for (const FDebugViewGroup& Group : GetPresetGroups())
+	{
+		if (Group.Presets.ContainsByPredicate([RuntimeType, VisualizationMode](const FDebugViewPreset& Preset)
+		{
+			return Preset.ActionType == RuntimeType && Preset.VisualizationMode == VisualizationMode;
+		}))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool IsCommandValueSupported(const FString& Command)
+{
+	if (Command.IsEmpty())
+	{
+		return false;
+	}
+	for (const TCHAR Character : Command)
+	{
+		if (Character < TEXT(' '))
+		{
+			return false;
+		}
+	}
+	return true;
 }
 
 FString GetViewModeConfigValue(EViewModeIndex ViewMode)
@@ -138,7 +250,8 @@ FString GetActionTypeString(ETADebugViewCustomActionType ActionType)
 	case ETADebugViewCustomActionType::NaniteVisualization: return TEXT("Nanite");
 	case ETADebugViewCustomActionType::LumenVisualization: return TEXT("Lumen");
 	case ETADebugViewCustomActionType::VirtualShadowMapVisualization: return TEXT("VSM");
-	default: return TEXT("Command");
+	case ETADebugViewCustomActionType::Command: return TEXT("Command");
+	default: return TEXT("Invalid");
 	}
 }
 
@@ -207,6 +320,19 @@ bool ParseWorkflowObject(
 		return false;
 	}
 	WorkflowObject->TryGetStringField(TEXT("icon"), IconName);
+	Id.TrimStartAndEndInline();
+	Label.TrimStartAndEndInline();
+	Tooltip.TrimStartAndEndInline();
+	IconName.TrimStartAndEndInline();
+	if (IconName.IsEmpty())
+	{
+		IconName = TEXT("Icons.Settings");
+	}
+	if (Id.IsEmpty() || Label.IsEmpty())
+	{
+		OutDiagnostics.Add(TEXT("Workflow id and label must not be empty or whitespace."));
+		return false;
+	}
 
 	const TArray<TSharedPtr<FJsonValue>>* ActivateJson = nullptr;
 	const TArray<TSharedPtr<FJsonValue>>* DeactivateJson = nullptr;
@@ -260,28 +386,34 @@ bool ParseWorkflowObject(
 	return !OutWorkflow.Id.IsNone() && !OutWorkflow.Label.IsEmpty();
 }
 
-bool LoadWorkflowFile(
+EWorkflowFileLoadStatus LoadWorkflowFile(
 	const FString& FilePath,
 	EWorkflowPresetSource Source,
 	bool bAllowMissing,
+	bool bRequireAtLeastOneWorkflow,
 	TArray<FWorkflowPreset>& OutWorkflows,
-	TArray<FString>& OutDiagnostics)
+	TArray<FString>& OutDiagnostics,
+	FString* OutFileHash = nullptr)
 {
 	OutWorkflows.Reset();
+	if (OutFileHash)
+	{
+		OutFileHash->Reset();
+	}
 	if (FilePath.IsEmpty() || !IFileManager::Get().FileExists(*FilePath))
 	{
 		if (!bAllowMissing)
 		{
 			OutDiagnostics.Add(FString::Printf(TEXT("Workflow JSON is missing: %s"), *FilePath));
 		}
-		return bAllowMissing;
+		return bAllowMissing ? EWorkflowFileLoadStatus::Missing : EWorkflowFileLoadStatus::Invalid;
 	}
 
 	FString JsonText;
 	if (!FFileHelper::LoadFileToString(JsonText, *FilePath))
 	{
 		OutDiagnostics.Add(FString::Printf(TEXT("Could not read workflow JSON: %s"), *FilePath));
-		return false;
+		return EWorkflowFileLoadStatus::Invalid;
 	}
 
 	TSharedPtr<FJsonObject> RootObject;
@@ -289,7 +421,7 @@ bool LoadWorkflowFile(
 	if (!FJsonSerializer::Deserialize(Reader, RootObject) || !RootObject.IsValid())
 	{
 		OutDiagnostics.Add(FString::Printf(TEXT("Workflow JSON is invalid: %s"), *FilePath));
-		return false;
+		return EWorkflowFileLoadStatus::Invalid;
 	}
 
 	FString Format;
@@ -297,19 +429,26 @@ bool LoadWorkflowFile(
 	if (!RootObject->TryGetStringField(TEXT("format"), Format)
 		|| Format != WorkflowSchemaFormat
 		|| !RootObject->TryGetNumberField(TEXT("version"), Version)
-		|| static_cast<int32>(Version) != WorkflowSchemaVersion)
+		|| !FMath::IsFinite(Version)
+		|| Version != static_cast<double>(WorkflowSchemaVersion))
 	{
 		OutDiagnostics.Add(FString::Printf(TEXT("Unsupported workflow JSON format or version: %s"), *FilePath));
-		return false;
+		return EWorkflowFileLoadStatus::Invalid;
 	}
 
 	const TArray<TSharedPtr<FJsonValue>>* WorkflowValues = nullptr;
 	if (!RootObject->TryGetArrayField(TEXT("workflows"), WorkflowValues) || !WorkflowValues)
 	{
 		OutDiagnostics.Add(FString::Printf(TEXT("Workflow JSON has no workflows array: %s"), *FilePath));
-		return false;
+		return EWorkflowFileLoadStatus::Invalid;
+	}
+	if (bRequireAtLeastOneWorkflow && WorkflowValues->IsEmpty())
+	{
+		OutDiagnostics.Add(FString::Printf(TEXT("Workflow JSON contains no workflows: %s"), *FilePath));
+		return EWorkflowFileLoadStatus::Invalid;
 	}
 
+	TArray<FWorkflowPreset> ParsedWorkflows;
 	TSet<FName> SeenIds;
 	for (const TSharedPtr<FJsonValue>& WorkflowValue : *WorkflowValues)
 	{
@@ -323,17 +462,23 @@ bool LoadWorkflowFile(
 			Source);
 		if (!ParseWorkflowObject(WorkflowValue.IsValid() ? WorkflowValue->AsObject() : nullptr, Source, Workflow, OutDiagnostics))
 		{
-			return false;
+			return EWorkflowFileLoadStatus::Invalid;
 		}
 		if (SeenIds.Contains(Workflow.Id))
 		{
 			OutDiagnostics.Add(FString::Printf(TEXT("Duplicate workflow id: %s"), *Workflow.Id.ToString()));
-			return false;
+			return EWorkflowFileLoadStatus::Invalid;
 		}
 		SeenIds.Add(Workflow.Id);
-		OutWorkflows.Add(MoveTemp(Workflow));
+		ParsedWorkflows.Add(MoveTemp(Workflow));
 	}
-	return true;
+
+	OutWorkflows = MoveTemp(ParsedWorkflows);
+	if (OutFileHash)
+	{
+		*OutFileHash = HashWorkflowFileText(JsonText);
+	}
+	return EWorkflowFileLoadStatus::Valid;
 }
 
 TSharedPtr<FJsonObject> SerializeWorkflow(const FWorkflowPreset& Workflow)
@@ -369,6 +514,11 @@ TSharedPtr<FJsonObject> SerializeWorkflow(const FWorkflowPreset& Workflow)
 
 bool SaveOverrideWorkflows(const TArray<FWorkflowPreset>& Overrides, FString& OutError)
 {
+	if (!EnsureOverrideSnapshotIsWritable(OutError))
+	{
+		return false;
+	}
+
 	TSharedPtr<FJsonObject> RootObject = MakeShared<FJsonObject>();
 	RootObject->SetStringField(TEXT("format"), WorkflowSchemaFormat);
 	RootObject->SetNumberField(TEXT("version"), WorkflowSchemaVersion);
@@ -390,7 +540,10 @@ bool SaveOverrideWorkflows(const TArray<FWorkflowPreset>& Overrides, FString& Ou
 
 	const FString FinalPath = GetOverrideWorkflowFilePath();
 	const FString Directory = FPaths::GetPath(FinalPath);
-	const FString TempPath = FinalPath + TEXT(".tmp");
+	const FString TempPath = FString::Printf(
+		TEXT("%s.%s.tmp"),
+		*FinalPath,
+		*FGuid::NewGuid().ToString(EGuidFormats::Digits));
 	const FString BackupPath = FinalPath + TEXT(".bak");
 	if (!IFileManager::Get().MakeDirectory(*Directory, true)
 		|| !FFileHelper::SaveStringToFile(JsonText, *TempPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
@@ -401,16 +554,25 @@ bool SaveOverrideWorkflows(const TArray<FWorkflowPreset>& Overrides, FString& Ou
 
 	TArray<FWorkflowPreset> ValidationWorkflows;
 	TArray<FString> ValidationDiagnostics;
-	if (!LoadWorkflowFile(TempPath, EWorkflowPresetSource::UserCreated, false, ValidationWorkflows, ValidationDiagnostics))
+	if (LoadWorkflowFile(
+		TempPath,
+		EWorkflowPresetSource::UserCreated,
+		false,
+		false,
+		ValidationWorkflows,
+		ValidationDiagnostics) != EWorkflowFileLoadStatus::Valid)
 	{
 		IFileManager::Get().Delete(*TempPath, false, true, true);
 		OutError = ValidationDiagnostics.IsEmpty() ? TEXT("Staged workflow overrides failed validation.") : ValidationDiagnostics[0];
 		return false;
 	}
 
-	if (IFileManager::Get().FileExists(*FinalPath))
+	if (IFileManager::Get().FileExists(*FinalPath)
+		&& IFileManager::Get().Copy(*BackupPath, *FinalPath, true, false) != 0)
 	{
-		IFileManager::Get().Copy(*BackupPath, *FinalPath, true, false);
+		IFileManager::Get().Delete(*TempPath, false, true, true);
+		OutError = FString::Printf(TEXT("Could not back up workflow overrides: %s"), *BackupPath);
+		return false;
 	}
 	if (!IFileManager::Get().Move(*FinalPath, *TempPath, true, false, false, true))
 	{
@@ -418,80 +580,87 @@ bool SaveOverrideWorkflows(const TArray<FWorkflowPreset>& Overrides, FString& Ou
 		OutError = FString::Printf(TEXT("Could not replace workflow overrides: %s"), *FinalPath);
 		return false;
 	}
+
+	CachedOverrideLoadStatus = EWorkflowFileLoadStatus::Valid;
+	bCachedOverrideFileExists = true;
+	CachedOverrideFileHash = HashWorkflowFileText(JsonText);
 	return true;
 }
 
-bool MigrateLegacyCustomWorkflows(TArray<FWorkflowPreset>& InOutOverrides)
+bool AreActionsEquivalent(const TArray<FDebugViewAction>& Left, const TArray<FDebugViewAction>& Right)
 {
-	UTADebugViewCustomPresetSettings* Settings = UTADebugViewCustomPresetSettings::GetMutable();
-	if (!Settings || Settings->bHasMigratedWorkflowOverridesV2)
+	if (Left.Num() != Right.Num())
 	{
-		return true;
-	}
-
-	TSet<FName> ExistingIds;
-	for (const FWorkflowPreset& Override : InOutOverrides)
-	{
-		ExistingIds.Add(Override.Id);
-	}
-
-	for (FTADebugViewCustomWorkflowPreset LegacyPreset : Settings->CustomWorkflowPresets)
-	{
-		LegacyPreset.EnsureId();
-		LegacyPreset.MigrateLegacyCommands();
-		if (LegacyPreset.Label.TrimStartAndEnd().IsEmpty() || LegacyPreset.ActivateActions.IsEmpty())
-		{
-			continue;
-		}
-
-		FName WorkflowId(*LegacyPreset.Id);
-		while (ExistingIds.Contains(WorkflowId))
-		{
-			WorkflowId = FName(*FString::Printf(TEXT("%s_%s"), *LegacyPreset.Id, *FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(6)));
-		}
-
-		TArray<FDebugViewAction> ActivateActions;
-		TArray<FDebugViewAction> DeactivateActions;
-		for (const FTADebugViewCustomAction& SavedAction : LegacyPreset.ActivateActions)
-		{
-			FDebugViewAction RuntimeAction;
-			if (ConvertSavedActionToRuntimeAction(SavedAction, RuntimeAction))
-			{
-				ActivateActions.Add(MoveTemp(RuntimeAction));
-			}
-		}
-		for (const FTADebugViewCustomAction& SavedAction : LegacyPreset.DeactivateActions)
-		{
-			FDebugViewAction RuntimeAction;
-			if (ConvertSavedActionToRuntimeAction(SavedAction, RuntimeAction))
-			{
-				DeactivateActions.Add(MoveTemp(RuntimeAction));
-			}
-		}
-		if (ActivateActions.IsEmpty())
-		{
-			continue;
-		}
-
-		InOutOverrides.Emplace(
-			*WorkflowId.ToString(),
-			FText::FromString(LegacyPreset.Label),
-			FText::FromString(LegacyPreset.Tooltip),
-			TEXT("Icons.Settings"),
-			MoveTemp(ActivateActions),
-			MoveTemp(DeactivateActions),
-			EWorkflowPresetSource::UserCreated);
-		ExistingIds.Add(WorkflowId);
-	}
-
-	FString SaveError;
-	if (!SaveOverrideWorkflows(InOutOverrides, SaveError))
-	{
-		CachedDiagnostics.Add(FString::Printf(TEXT("Legacy workflow migration was not saved: %s"), *SaveError));
 		return false;
 	}
-	Settings->bHasMigratedWorkflowOverridesV2 = true;
-	Settings->SaveUserSettings();
+	for (int32 Index = 0; Index < Left.Num(); ++Index)
+	{
+		const FDebugViewAction& LeftAction = Left[Index];
+		const FDebugViewAction& RightAction = Right[Index];
+		if (LeftAction.ActionType != RightAction.ActionType
+			|| LeftAction.ViewModeIndex != RightAction.ViewModeIndex
+			|| LeftAction.VisualizationMode != RightAction.VisualizationMode
+			|| !LeftAction.Commands.TrimStartAndEnd().Equals(RightAction.Commands.TrimStartAndEnd(), ESearchCase::IgnoreCase))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+bool AreWorkflowsEquivalent(const FWorkflowPreset& Left, const FWorkflowPreset& Right)
+{
+	return Left.Id == Right.Id
+		&& Left.Label.ToString().Equals(Right.Label.ToString(), ESearchCase::IgnoreCase)
+		&& Left.Tooltip.ToString().Equals(Right.Tooltip.ToString(), ESearchCase::IgnoreCase)
+		&& Left.IconName == Right.IconName
+		&& AreActionsEquivalent(Left.ActivateActions, Right.ActivateActions)
+		&& AreActionsEquivalent(Left.DeactivateActions, Right.DeactivateActions);
+}
+
+bool BuildLegacyWorkflow(FTADebugViewCustomWorkflowPreset LegacyPreset, FWorkflowPreset& OutWorkflow, FString& OutError)
+{
+	LegacyPreset.EnsureId();
+	LegacyPreset.MigrateLegacyCommands();
+	LegacyPreset.Label.TrimStartAndEndInline();
+	LegacyPreset.Tooltip.TrimStartAndEndInline();
+	if (LegacyPreset.Label.IsEmpty() || LegacyPreset.ActivateActions.IsEmpty())
+	{
+		OutError = FString::Printf(TEXT("Legacy workflow %s has no name or activation actions."), *LegacyPreset.Id);
+		return false;
+	}
+
+	TArray<FDebugViewAction> ActivateActions;
+	TArray<FDebugViewAction> DeactivateActions;
+	for (const FTADebugViewCustomAction& SavedAction : LegacyPreset.ActivateActions)
+	{
+		FDebugViewAction RuntimeAction;
+		if (!ConvertSavedActionToRuntimeAction(SavedAction, RuntimeAction))
+		{
+			OutError = FString::Printf(TEXT("Legacy workflow %s has an invalid activation action: %s"), *LegacyPreset.Id, *SavedAction.Value);
+			return false;
+		}
+		ActivateActions.Add(MoveTemp(RuntimeAction));
+	}
+	for (const FTADebugViewCustomAction& SavedAction : LegacyPreset.DeactivateActions)
+	{
+		FDebugViewAction RuntimeAction;
+		if (!ConvertSavedActionToRuntimeAction(SavedAction, RuntimeAction))
+		{
+			OutError = FString::Printf(TEXT("Legacy workflow %s has an invalid restore action: %s"), *LegacyPreset.Id, *SavedAction.Value);
+			return false;
+		}
+		DeactivateActions.Add(MoveTemp(RuntimeAction));
+	}
+
+	OutWorkflow = FWorkflowPreset(
+		*LegacyPreset.Id,
+		FText::FromString(LegacyPreset.Label),
+		FText::FromString(LegacyPreset.Tooltip),
+		TEXT("Icons.Settings"),
+		MoveTemp(ActivateActions),
+		MoveTemp(DeactivateActions),
+		EWorkflowPresetSource::UserCreated);
 	return true;
 }
 
@@ -507,18 +676,46 @@ void RebuildWorkflowCache()
 	CachedEffectiveWorkflows.Reset();
 	CachedOverrideWorkflows.Reset();
 
-	if (!LoadWorkflowFile(GetDefaultWorkflowFilePath(), EWorkflowPresetSource::Default, false, CachedDefaultWorkflows, CachedDiagnostics))
+	if (LoadWorkflowFile(
+		GetDefaultWorkflowFilePath(),
+		EWorkflowPresetSource::Default,
+		false,
+		true,
+		CachedDefaultWorkflows,
+		CachedDiagnostics) != EWorkflowFileLoadStatus::Valid)
 	{
 		CachedDefaultWorkflows = GetWorkflowPresets();
 		CachedDiagnostics.Add(TEXT("Using compiled workflow defaults because DefaultWorkflows.json could not be loaded."));
 	}
 
-	LoadWorkflowFile(GetOverrideWorkflowFilePath(), EWorkflowPresetSource::UserCreated, true, CachedOverrideWorkflows, CachedDiagnostics);
-	MigrateLegacyCustomWorkflows(CachedOverrideWorkflows);
+	const FString OverridePath = GetOverrideWorkflowFilePath();
+	CachedOverrideLoadStatus = LoadWorkflowFile(
+		OverridePath,
+		EWorkflowPresetSource::UserCreated,
+		true,
+		false,
+		CachedOverrideWorkflows,
+		CachedDiagnostics,
+		&CachedOverrideFileHash);
+	bCachedOverrideFileExists = IFileManager::Get().FileExists(*OverridePath);
+	if (CachedOverrideLoadStatus == EWorkflowFileLoadStatus::Invalid)
+	{
+		CachedOverrideWorkflows.Reset();
+		CachedDiagnostics.Add(TEXT("Workflow overrides are write-protected until the invalid file is repaired or restored."));
+	}
+	if (HasPendingLegacyWorkflowImport())
+	{
+		CachedDiagnostics.Add(TEXT("Legacy personal workflows are waiting for explicit import into the project-shared override file."));
+	}
 
 	CachedEffectiveWorkflows = CachedDefaultWorkflows;
 	for (FWorkflowPreset& Override : CachedOverrideWorkflows)
 	{
+		if (Override.Id == FName(TEXT("TADebugWorkflow_ResetDebug")))
+		{
+			CachedDiagnostics.Add(TEXT("The Reset Debug override was ignored because this system workflow is protected."));
+			continue;
+		}
 		const int32 DefaultIndex = CachedDefaultWorkflows.IndexOfByPredicate([&Override](const FWorkflowPreset& DefaultWorkflow)
 		{
 			return DefaultWorkflow.Id == Override.Id;
@@ -576,6 +773,11 @@ bool SaveWorkflowOverride(
 	FString& OutError)
 {
 	RebuildWorkflowCache();
+	if (WorkflowId == FName(TEXT("TADebugWorkflow_ResetDebug")))
+	{
+		OutError = TEXT("Reset Debug is a protected system workflow and cannot be modified.");
+		return false;
+	}
 	if (Label.TrimStartAndEnd().IsEmpty() || ActivateActions.IsEmpty())
 	{
 		OutError = TEXT("Workflow name and at least one activate action are required.");
@@ -633,20 +835,21 @@ bool SaveWorkflowOverride(
 		MoveTemp(RuntimeDeactivate),
 		bIsDefaultOverride ? EWorkflowPresetSource::Modified : EWorkflowPresetSource::UserCreated);
 
-	const int32 ExistingIndex = CachedOverrideWorkflows.IndexOfByPredicate([WorkflowId](const FWorkflowPreset& Existing)
+	TArray<FWorkflowPreset> CandidateOverrides = CachedOverrideWorkflows;
+	const int32 ExistingIndex = CandidateOverrides.IndexOfByPredicate([WorkflowId](const FWorkflowPreset& Existing)
 	{
 		return Existing.Id == WorkflowId;
 	});
 	if (ExistingIndex == INDEX_NONE)
 	{
-		CachedOverrideWorkflows.Add(MoveTemp(SavedWorkflow));
+		CandidateOverrides.Add(MoveTemp(SavedWorkflow));
 	}
 	else
 	{
-		CachedOverrideWorkflows[ExistingIndex] = MoveTemp(SavedWorkflow);
+		CandidateOverrides[ExistingIndex] = MoveTemp(SavedWorkflow);
 	}
 
-	if (!SaveOverrideWorkflows(CachedOverrideWorkflows, OutError))
+	if (!SaveOverrideWorkflows(CandidateOverrides, OutError))
 	{
 		bWorkflowCacheDirty = true;
 		return false;
@@ -664,11 +867,17 @@ bool ResetWorkflowToDefault(FName WorkflowId, FString& OutError)
 		OutError = TEXT("Only a modified default workflow can be reset.");
 		return false;
 	}
-	CachedOverrideWorkflows.RemoveAll([WorkflowId](const FWorkflowPreset& Override)
+	TArray<FWorkflowPreset> CandidateOverrides = CachedOverrideWorkflows;
+	const int32 RemovedCount = CandidateOverrides.RemoveAll([WorkflowId](const FWorkflowPreset& Override)
 	{
 		return Override.Id == WorkflowId;
 	});
-	if (!SaveOverrideWorkflows(CachedOverrideWorkflows, OutError))
+	if (RemovedCount == 0)
+	{
+		OutError = TEXT("The default workflow has no project override to reset.");
+		return false;
+	}
+	if (!SaveOverrideWorkflows(CandidateOverrides, OutError))
 	{
 		bWorkflowCacheDirty = true;
 		return false;
@@ -685,7 +894,8 @@ bool DeleteUserWorkflow(FName WorkflowId, FString& OutError)
 		OutError = TEXT("Default workflows cannot be deleted.");
 		return false;
 	}
-	const int32 RemovedCount = CachedOverrideWorkflows.RemoveAll([WorkflowId](const FWorkflowPreset& Override)
+	TArray<FWorkflowPreset> CandidateOverrides = CachedOverrideWorkflows;
+	const int32 RemovedCount = CandidateOverrides.RemoveAll([WorkflowId](const FWorkflowPreset& Override)
 	{
 		return Override.Id == WorkflowId;
 	});
@@ -694,11 +904,87 @@ bool DeleteUserWorkflow(FName WorkflowId, FString& OutError)
 		OutError = TEXT("Workflow was not found.");
 		return false;
 	}
-	if (!SaveOverrideWorkflows(CachedOverrideWorkflows, OutError))
+	if (!SaveOverrideWorkflows(CandidateOverrides, OutError))
 	{
 		bWorkflowCacheDirty = true;
 		return false;
 	}
+	InvalidateEffectiveWorkflowPresetCache();
+	return true;
+}
+
+bool AreWorkflowOverridesWriteProtected()
+{
+	RebuildWorkflowCache();
+	return CachedOverrideLoadStatus == EWorkflowFileLoadStatus::Invalid;
+}
+
+bool HasPendingLegacyWorkflowImport()
+{
+	const UTADebugViewCustomPresetSettings* Settings = GetDefault<UTADebugViewCustomPresetSettings>();
+	return Settings
+		&& !Settings->bHasMigratedWorkflowOverridesV2
+		&& !Settings->CustomWorkflowPresets.IsEmpty();
+}
+
+bool ImportLegacyWorkflows(FString& OutError)
+{
+	RebuildWorkflowCache();
+	UTADebugViewCustomPresetSettings* Settings = UTADebugViewCustomPresetSettings::GetMutable();
+	if (!Settings)
+	{
+		OutError = TEXT("Could not load legacy workflow settings.");
+		return false;
+	}
+	if (!HasPendingLegacyWorkflowImport())
+	{
+		return true;
+	}
+	if (!EnsureOverrideSnapshotIsWritable(OutError))
+	{
+		return false;
+	}
+
+	TArray<FWorkflowPreset> CandidateOverrides = CachedOverrideWorkflows;
+	for (const FTADebugViewCustomWorkflowPreset& LegacyPreset : Settings->CustomWorkflowPresets)
+	{
+		FWorkflowPreset MigratedWorkflow(
+			TEXT("Invalid"),
+			FText::GetEmpty(),
+			FText::GetEmpty(),
+			TEXT("Icons.Settings"),
+			TArray<FDebugViewAction>(),
+			TArray<FDebugViewAction>(),
+			EWorkflowPresetSource::UserCreated);
+		if (!BuildLegacyWorkflow(LegacyPreset, MigratedWorkflow, OutError))
+		{
+			return false;
+		}
+
+		const FWorkflowPreset* Existing = CandidateOverrides.FindByPredicate([&MigratedWorkflow](const FWorkflowPreset& Workflow)
+		{
+			return Workflow.Id == MigratedWorkflow.Id;
+		});
+		if (Existing)
+		{
+			if (!AreWorkflowsEquivalent(*Existing, MigratedWorkflow))
+			{
+				OutError = FString::Printf(
+					TEXT("Legacy workflow %s conflicts with a different project workflow using the same Id."),
+					*MigratedWorkflow.Id.ToString());
+				return false;
+			}
+			continue;
+		}
+		CandidateOverrides.Add(MoveTemp(MigratedWorkflow));
+	}
+
+	if (!SaveOverrideWorkflows(CandidateOverrides, OutError))
+	{
+		return false;
+	}
+	Settings->bHasMigratedWorkflowOverridesV2 = true;
+	Settings->SaveUserSettings();
 	InvalidateEffectiveWorkflowPresetCache();
 	return true;
 }
@@ -719,9 +1005,11 @@ bool ConvertRuntimeActionToSavedAction(const FDebugViewAction& RuntimeAction, FT
 	case EPresetActionType::VirtualShadowMapVisualization:
 		OutSavedAction = FTADebugViewCustomAction(ETADebugViewCustomActionType::VirtualShadowMapVisualization, RuntimeAction.VisualizationMode.ToString());
 		break;
-	default:
+	case EPresetActionType::Command:
 		OutSavedAction = FTADebugViewCustomAction(ETADebugViewCustomActionType::Command, RuntimeAction.Commands);
 		break;
+	default:
+		return false;
 	}
 	return !OutSavedAction.Value.IsEmpty();
 }
@@ -746,17 +1034,35 @@ bool ConvertSavedActionToRuntimeAction(const FTADebugViewCustomAction& SavedActi
 		return true;
 	}
 	case ETADebugViewCustomActionType::NaniteVisualization:
+		if (!IsVisualizationModeSupported(SavedAction.ActionType, FName(*Value)))
+		{
+			return false;
+		}
 		OutRuntimeAction = FDebugViewAction::Nanite(*Value);
 		return true;
 	case ETADebugViewCustomActionType::LumenVisualization:
+		if (!IsVisualizationModeSupported(SavedAction.ActionType, FName(*Value)))
+		{
+			return false;
+		}
 		OutRuntimeAction = FDebugViewAction::Lumen(*Value);
 		return true;
 	case ETADebugViewCustomActionType::VirtualShadowMapVisualization:
+		if (!IsVisualizationModeSupported(SavedAction.ActionType, FName(*Value)))
+		{
+			return false;
+		}
 		OutRuntimeAction = FDebugViewAction::VirtualShadowMap(*Value);
 		return true;
-	default:
+	case ETADebugViewCustomActionType::Command:
+		if (!IsCommandValueSupported(Value))
+		{
+			return false;
+		}
 		OutRuntimeAction = FDebugViewAction::Command(*Value);
 		return true;
+	default:
+		return false;
 	}
 }
 
@@ -771,7 +1077,7 @@ FText GetWorkflowSourceLabel(EWorkflowPresetSource Source)
 	switch (Source)
 	{
 	case EWorkflowPresetSource::Modified: return LOCTEXT("WorkflowSourceModified", "Modified");
-	case EWorkflowPresetSource::UserCreated: return LOCTEXT("WorkflowSourceUserCreated", "User Created");
+	case EWorkflowPresetSource::UserCreated: return LOCTEXT("WorkflowSourceUserCreated", "Project Created");
 	default: return LOCTEXT("WorkflowSourceDefault", "Default");
 	}
 }
@@ -786,6 +1092,23 @@ const TArray<FString>& GetWorkflowRegistryDiagnostics()
 	RebuildWorkflowCache();
 	return CachedDiagnostics;
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+bool LoadWorkflowFileForTesting(
+	const FString& FilePath,
+	bool bRequireAtLeastOneWorkflow,
+	TArray<FWorkflowPreset>& OutWorkflows,
+	TArray<FString>& OutDiagnostics)
+{
+	return LoadWorkflowFile(
+		FilePath,
+		EWorkflowPresetSource::UserCreated,
+		false,
+		bRequireAtLeastOneWorkflow,
+		OutWorkflows,
+		OutDiagnostics) == EWorkflowFileLoadStatus::Valid;
+}
+#endif
 }
 
 #undef LOCTEXT_NAMESPACE

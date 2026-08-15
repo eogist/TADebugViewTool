@@ -113,6 +113,12 @@ void FTADebugViewExecutor::ExecutePresetFromPanel(FDebugViewPreset Preset)
 
 void FTADebugViewExecutor::ExecuteWorkflowPreset(const FWorkflowPreset& WorkflowPreset)
 {
+	if (WorkflowPreset.Id == FName(TEXT("TADebugWorkflow_ResetDebug")))
+	{
+		ResetDebugState();
+		return;
+	}
+
 	const bool bWasActive = ActiveWorkflowPresetId == WorkflowPreset.Id;
 	if (bWasActive)
 	{
@@ -147,6 +153,42 @@ void FTADebugViewExecutor::ExecuteWorkflowPreset(const FWorkflowPreset& Workflow
 		ActiveWorkflowPresetId = WorkflowPreset.Id;
 		ActiveWorkflowDeactivateActions = WorkflowPreset.DeactivateActions;
 	}
+}
+
+void FTADebugViewExecutor::ResetDebugState()
+{
+	if (!ActiveWorkflowPresetId.IsNone())
+	{
+		DeactivateActiveWorkflow();
+	}
+
+	const TArray<FLevelEditorViewportClient*> ViewportClients = GetTargetLevelViewportClients();
+	const int32 BoundsFlagIndex = FindShowFlagIndexCaseInsensitive(TEXT("bounds"));
+	const int32 NavigationFlagIndex = FindShowFlagIndexCaseInsensitive(TEXT("navigation"));
+	ApplyToLevelViewports(ViewportClients, [BoundsFlagIndex, NavigationFlagIndex](FLevelEditorViewportClient& ViewportClient)
+	{
+		ViewportClient.ChangeNaniteVisualizationMode(NAME_None);
+		ViewportClient.ChangeLumenVisualizationMode(NAME_None);
+		ViewportClient.ChangeVirtualShadowMapVisualizationMode(NAME_None);
+		ViewportClient.SetViewMode(VMI_Lit);
+		ViewportClient.SetEnabledStats(TArray<FString>());
+		if (BoundsFlagIndex != INDEX_NONE)
+		{
+			ViewportClient.EngineShowFlags.SetSingleFlag(static_cast<uint32>(BoundsFlagIndex), false);
+		}
+		if (NavigationFlagIndex != INDEX_NONE)
+		{
+			ViewportClient.EngineShowFlags.SetSingleFlag(static_cast<uint32>(NavigationFlagIndex), false);
+		}
+	});
+
+	ExecuteCommandList(
+		TEXT("stat none; r.Shadow.Virtual.Visualize.ShowCachedPagesOnly 0"),
+		ViewportClients);
+	ActiveWorkflowPresetId = NAME_None;
+	ActiveWorkflowDeactivateActions.Reset();
+	ActiveWorkflowViewportSnapshots.Reset();
+	ActiveWorkflowConsoleVariableSnapshots.Reset();
 }
 
 void FTADebugViewExecutor::SynchronizeFromCurrentViewportState()
